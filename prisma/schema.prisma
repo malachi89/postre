@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Collection {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+  rawPostmanJson  String?
+  metadataJson    String    @default("{}")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  folders         Folder[]
+  requests        Request[]
+  variables       Variable[]
+
+  @@index([createdAt])
+}
+
+model Folder {
+  id            String    @id @default(cuid())
+  name          String
+  collectionId  String
+  parentId      String?
+  sortOrder     Int       @default(0)
+  metadataJson  String    @default("{}")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  collection    Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  parent        Folder?    @relation("FolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children      Folder[]   @relation("FolderTree")
+  requests      Request[]
+
+  @@index([collectionId])
+  @@index([parentId])
+}
+
+model Request {
+  id              String      @id @default(cuid())
+  name            String
+  method          String      @default("GET")
+  url             String      @default("")
+  headersJson     String      @default("[]")
+  queryParamsJson String      @default("[]")
+  bodyMode        String      @default("none")
+  bodyRaw         String?
+  authJson        String      @default("{\"type\":\"none\"}")
+  metadataJson    String      @default("{}")
+  collectionId    String
+  folderId        String?
+  rawPostmanJson  String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  collection      Collection  @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  folder          Folder?     @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  variables       Variable[]
+  history         HistoryEntry[]
+
+  @@index([collectionId])
+  @@index([folderId])
+}
+
+model Environment {
+  id              String     @id @default(cuid())
+  name            String
+  active          Boolean    @default(false)
+  rawPostmanJson  String?
+  metadataJson    String     @default("{}")
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  variables       Variable[]
+
+  @@index([active])
+}
+
+model Variable {
+  id             String       @id @default(cuid())
+  key            String
+  initialValue   String       @default("")
+  currentValue   String       @default("")
+  enabled        Boolean      @default(true)
+  scope          String
+  isSecret       Boolean      @default(false)
+  collectionId   String?
+  environmentId  String?
+  requestId      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  collection     Collection?  @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  environment    Environment? @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  request        Request?     @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([scope])
+  @@index([collectionId])
+  @@index([environmentId])
+  @@index([requestId])
+}
+
+model HistoryEntry {
+  id                    String    @id @default(cuid())
+  requestId             String?
+  method                String
+  url                   String
+  status                Int?
+  statusText            String?
+  durationMs            Int?
+  sizeBytes             Int?
+  responseHeadersJson   String    @default("[]")
+  responseBodyPreview   String?
+  responseBodyTruncated Boolean   @default(false)
+  error                 String?
+  createdAt             DateTime  @default(now())
+  request               Request?  @relation(fields: [requestId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([requestId])
+}
+
+model ImportRecord {
+  id             String   @id @default(cuid())
+  type           String
+  name           String
+  summaryJson    String   @default("{}")
+  warningsJson   String   @default("[]")
+  rawPostmanJson String
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+}
