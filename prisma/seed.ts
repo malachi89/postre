@@ -85,7 +85,7 @@ async function main() {
     }
   });
 
-  console.log(`Seeded Postre with environment ${environment.name}.`);
+  console.log(`Seeded PostRE with environment ${environment.name}.`);
 }
 
 main()

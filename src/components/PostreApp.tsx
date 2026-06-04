@@ -2,7 +2,6 @@
 
 import {
   ChevronRight,
-  Database,
   Eye,
   EyeOff,
   FileJson,
@@ -50,6 +49,26 @@ type SendResponseState =
     };
 
 const EMPTY_AUTH: AuthConfig = { type: "none" };
+const REQUEST_TABS = ["auth", "headers", "query", "body"] as const;
+type RequestTab = (typeof REQUEST_TABS)[number];
+
+function CakeIcon({
+  size,
+  className = ""
+}: {
+  size: number;
+  className?: string;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center justify-center leading-none ${className}`}
+      style={{ fontSize: size, lineHeight: 1 }}
+      aria-hidden="true"
+    >
+      🍰
+    </span>
+  );
+}
 
 export function PostreApp() {
   const [data, setData] = useState<AppData | null>(null);
@@ -304,10 +323,10 @@ export function PostreApp() {
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4">
         <div className="flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded bg-amber-500 text-white">
-            <Database size={17} />
+            <CakeIcon size={17} />
           </div>
           <div>
-            <h1 className="text-base font-semibold leading-5">Postre</h1>
+            <h1 className="text-base font-semibold leading-5">PostRE</h1>
             <p className="text-xs text-slate-500">Local HTTP client</p>
           </div>
         </div>
@@ -342,7 +361,7 @@ export function PostreApp() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[300px_minmax(520px,1fr)_380px]">
+      <div className="grid min-h-0 flex-1 grid-cols-[300px_minmax(0,1fr)]">
         <aside className="flex min-h-0 flex-col border-r border-slate-200 bg-white">
           <div className="flex h-12 items-center justify-between border-b border-slate-200 px-3">
             <span className="text-sm font-semibold text-slate-700">Collections</span>
@@ -420,40 +439,23 @@ export function PostreApp() {
 
         <section className="flex min-h-0 flex-col bg-[#fbfcfd]">
           {draft ? (
-            <RequestEditor
-              draft={draft}
-              busy={busy}
-              onChange={setDraft}
-              onSave={() => void saveDraft()}
-              onSend={() => void sendRequest()}
-              onDelete={() => void deleteRequest()}
-            />
+            <div className="flex min-h-0 flex-1 flex-col">
+              <RequestEditor
+                draft={draft}
+                busy={busy}
+                onChange={setDraft}
+                onSave={() => void saveDraft()}
+                onSend={() => void sendRequest()}
+                onDelete={() => void deleteRequest()}
+              />
+              <ResponsePanel response={response} body={responseBody} busy={busy} />
+            </div>
           ) : (
             <div className="flex flex-1 items-center justify-center">
               <EmptyState title="Select or create a request" actionLabel="New request" onAction={createRequest} />
             </div>
           )}
         </section>
-
-        <aside className="flex min-h-0 flex-col border-l border-slate-200 bg-white">
-          <div className="flex h-12 items-center justify-between border-b border-slate-200 px-4">
-            <span className="text-sm font-semibold text-slate-700">Response</span>
-            {busy ? <Loader2 className="animate-spin text-teal-600" size={18} /> : null}
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto p-4">
-            {response ? (
-              "error" in response ? (
-                <ErrorResponse response={response} />
-              ) : (
-                <SuccessResponse response={response} body={responseBody} />
-              )
-            ) : (
-              <p className="text-sm text-slate-500">
-                Send a request to see status, headers, timing, size, and body here.
-              </p>
-            )}
-          </div>
-        </aside>
       </div>
 
       {notice ? (
@@ -500,9 +502,11 @@ function RequestEditor({
   onSend: () => void;
   onDelete: () => void;
 }) {
+  const [activeTab, setActiveTab] = useState<RequestTab>("auth");
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-slate-200 bg-white p-4">
+    <div className="flex min-h-0 flex-1 flex-col border-b border-slate-200 bg-white">
+      <div className="border-b border-slate-200 p-4">
         <div className="mb-3 flex items-center gap-2">
           <input
             className="h-10 min-w-0 flex-1 rounded border border-slate-300 px-3 text-sm font-semibold"
@@ -551,51 +555,82 @@ function RequestEditor({
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
         <div className="grid gap-4">
-          <EditorSection title="Auth">
-            <AuthEditor auth={draft.auth} onChange={(auth) => onChange({ ...draft, auth })} />
-          </EditorSection>
+          <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
+            {REQUEST_TABS.map((tab) => {
+              const label =
+                tab === "auth" ? "Auth" : tab === "headers" ? "Headers" : tab === "query" ? "Query Params" : "Body";
+              const active = activeTab === tab;
 
-          <EditorSection title="Headers">
-            <KeyValueTable
-              rows={draft.headers}
-              onChange={(headers) => onChange({ ...draft, headers })}
-              addLabel="Add header"
-            />
-          </EditorSection>
+              return (
+                <button
+                  key={tab}
+                  className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                    active
+                      ? "border-teal-600 bg-teal-600 text-white"
+                      : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                  onClick={() => setActiveTab(tab)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
 
-          <EditorSection title="Query Params">
-            <KeyValueTable
-              rows={draft.queryParams}
-              onChange={(queryParams) => onChange({ ...draft, queryParams })}
-              addLabel="Add param"
-            />
-          </EditorSection>
+          {activeTab === "auth" ? (
+            <EditorSection title="Auth">
+              <AuthEditor auth={draft.auth} onChange={(auth) => onChange({ ...draft, auth })} />
+            </EditorSection>
+          ) : null}
 
-          <EditorSection title="Body">
-            <div className="mb-3">
-              <select
-                className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
-                value={draft.bodyMode}
-                onChange={(event) =>
-                  onChange({
-                    ...draft,
-                    bodyMode: event.target.value as BodyMode
-                  })
-                }
-              >
-                <option value="none">none</option>
-                <option value="raw_json">raw JSON</option>
-                <option value="raw_text">raw text</option>
-              </select>
-            </div>
-            <textarea
-              className="min-h-64 w-full resize-y rounded border border-slate-300 bg-white p-3 font-mono text-sm"
-              value={draft.bodyRaw}
-              disabled={draft.bodyMode === "none"}
-              onChange={(event) => onChange({ ...draft, bodyRaw: event.target.value })}
-              placeholder={draft.bodyMode === "raw_json" ? '{\n  "name": "Postre"\n}' : ""}
-            />
-          </EditorSection>
+          {activeTab === "headers" ? (
+            <EditorSection title="Headers">
+              <KeyValueTable
+                rows={draft.headers}
+                onChange={(headers) => onChange({ ...draft, headers })}
+                addLabel="Add header"
+              />
+            </EditorSection>
+          ) : null}
+
+          {activeTab === "query" ? (
+            <EditorSection title="Query Params">
+              <KeyValueTable
+                rows={draft.queryParams}
+                onChange={(queryParams) => onChange({ ...draft, queryParams })}
+                addLabel="Add param"
+              />
+            </EditorSection>
+          ) : null}
+
+          {activeTab === "body" ? (
+            <EditorSection title="Body">
+              <div className="mb-3">
+                <select
+                  className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+                  value={draft.bodyMode}
+                  onChange={(event) =>
+                    onChange({
+                      ...draft,
+                      bodyMode: event.target.value as BodyMode
+                    })
+                  }
+                >
+                  <option value="none">none</option>
+                  <option value="raw_json">raw JSON</option>
+                  <option value="raw_text">raw text</option>
+                </select>
+              </div>
+              <textarea
+                className="min-h-64 w-full resize-y rounded border border-slate-300 bg-white p-3 font-mono text-sm"
+                value={draft.bodyRaw}
+                disabled={draft.bodyMode === "none"}
+                onChange={(event) => onChange({ ...draft, bodyRaw: event.target.value })}
+                placeholder={draft.bodyMode === "raw_json" ? '{\n  "name": "PostRE"\n}' : ""}
+              />
+            </EditorSection>
+          ) : null}
         </div>
       </div>
     </div>
@@ -1328,6 +1363,38 @@ function SuccessResponse({ response, body }: { response: SendResult; body: strin
         </pre>
       </EditorSection>
     </div>
+  );
+}
+
+function ResponsePanel({
+  response,
+  body,
+  busy
+}: {
+  response: SendResponseState | null;
+  body: string;
+  busy: boolean;
+}) {
+  return (
+    <aside className="flex min-h-0 flex-col border-t border-slate-200 bg-white">
+      <div className="flex h-12 items-center justify-between border-b border-slate-200 px-4">
+        <span className="text-sm font-semibold text-slate-700">Response</span>
+        {busy ? <Loader2 className="animate-spin text-teal-600" size={18} /> : null}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        {response ? (
+          "error" in response ? (
+            <ErrorResponse response={response} />
+          ) : (
+            <SuccessResponse response={response} body={body} />
+          )
+        ) : (
+          <p className="text-sm text-slate-500">
+            Send a request to see status, headers, timing, size, and body here.
+          </p>
+        )}
+      </div>
+    </aside>
   );
 }
 

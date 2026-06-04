@@ -1,6 +1,6 @@
-# Postre
+# PostRE
 
-Postre is a local, personal Postman-like HTTP client. It runs on localhost, stores data in SQLite, and executes HTTP requests from the local Next.js backend so browser CORS does not block personal API work.
+PostRE is a local, personal Postman-like HTTP client. It runs on localhost, stores data in SQLite, and executes HTTP requests from the local Next.js backend so browser CORS does not block personal API work.
 
 ## Stack
 
