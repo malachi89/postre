@@ -62,6 +62,8 @@ export interface RequestDraft {
   queryParams: KeyValueRow[];
   bodyMode: BodyMode;
   bodyRaw: string;
+  preRequestScript: string;
+  postRequestScript: string;
   auth: AuthConfig;
 }
 
@@ -78,6 +80,8 @@ export interface ApiFolder {
   name: string;
   collectionId: string;
   parentId: string | null;
+  preRequestScript: string;
+  postRequestScript: string;
   children: ApiFolder[];
   requests: ApiRequest[];
 }
@@ -86,6 +90,8 @@ export interface ApiCollection {
   id: string;
   name: string;
   description: string | null;
+  preRequestScript: string;
+  postRequestScript: string;
   folders: ApiFolder[];
   requests: ApiRequest[];
   variables: VariableValue[];
@@ -148,4 +154,63 @@ export interface SendResult {
 export interface SendErrorResult {
   error: string;
   durationMs?: number;
+}
+
+export type ScriptPhase = "pre-request" | "post-request";
+
+export interface ScriptExecutionResult {
+  phase: ScriptPhase;
+  ok: boolean;
+  logs: string[];
+  source?: string;
+  error?: string;
+}
+
+export type CollectionRunTargetType = "collection" | "folder";
+export type CollectionRunStatus = "running" | "completed" | "completed_with_errors" | "stopped";
+
+export interface ApiCollectionRunSummary {
+  id: string;
+  collectionId: string;
+  targetType: CollectionRunTargetType;
+  targetId: string;
+  targetName: string;
+  environmentId: string | null;
+  iterations: number;
+  delayMs: number;
+  stopOnError: boolean;
+  status: CollectionRunStatus;
+  requestOrder: string[];
+  totalSteps: number;
+  completedSteps: number;
+  successCount: number;
+  errorCount: number;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface ApiCollectionRunStep {
+  id: string;
+  requestId: string | null;
+  iteration: number;
+  sequence: number;
+  requestName: string;
+  method: HttpMethod;
+  resolvedUrl: string | null;
+  status: number | null;
+  statusText: string | null;
+  durationMs: number | null;
+  sizeBytes: number | null;
+  responseHeaders: KeyValueRow[];
+  responseBodyPreview: string | null;
+  responseBodyTruncated: boolean;
+  error: string | null;
+  missingVariables: string[];
+  scriptResults: ScriptExecutionResult[];
+  createdAt: string;
+}
+
+export interface ApiCollectionRunReport {
+  run: ApiCollectionRunSummary;
+  steps: ApiCollectionRunStep[];
 }

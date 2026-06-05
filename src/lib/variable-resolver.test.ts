@@ -53,6 +53,8 @@ describe("variable resolver", () => {
       queryParams: [{ key: "id", value: "{{userId}}", enabled: true }],
       bodyMode: "raw_json",
       bodyRaw: '{"id":"{{userId}}"}',
+      preRequestScript: "",
+      postRequestScript: "",
       auth: { type: "bearer", token: "{{token}}" }
     };
 

@@ -1,0 +1,19 @@
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="cakeBase" x1="10" y1="10" x2="38" y2="40" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F59E0B" />
+      <stop offset="1" stop-color="#D97706" />
+    </linearGradient>
+    <linearGradient id="plate" x1="8" y1="35" x2="40" y2="35" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E2E8F0" />
+      <stop offset="1" stop-color="#CBD5E1" />
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="44" height="44" rx="12" fill="#FFF7ED" />
+  <path d="M11 34.5H37" stroke="url(#plate)" stroke-width="3.5" stroke-linecap="round" />
+  <path d="M14 30.5L23 14C23.9 12.4 26.1 12.4 27 14L36 30.5C36.7 31.8 35.8 33.5 34.3 33.5H15.7C14.2 33.5 13.3 31.8 14 30.5Z" fill="url(#cakeBase)" stroke="#9A3412" stroke-width="1.5" stroke-linejoin="round" />
+  <path d="M18.2 22.4C20.1 23.9 22.1 24.7 24 24.7C25.9 24.7 27.9 23.9 29.8 22.4" stroke="#7C2D12" stroke-width="1.6" stroke-linecap="round" opacity="0.9" />
+  <path d="M18.7 18.7C20.4 20 22.2 20.7 24 20.7C25.8 20.7 27.6 20 29.3 18.7" stroke="#7C2D12" stroke-width="1.6" stroke-linecap="round" opacity="0.7" />
+  <path d="M22 13.5C22 11.2 23.3 9.5 24.3 8.5C24.7 8.1 25.3 8.1 25.7 8.5C26.7 9.5 28 11.2 28 13.5C28 15 26.9 16.2 25.4 16.2H24.6C23.1 16.2 22 15 22 13.5Z" fill="#FB7185" stroke="#9F1239" stroke-width="1.2" />
+  <path d="M22.8 8.4C23.3 7.5 24 6.8 24.8 6.3C25.3 6 25.7 6 26 6.4C26.3 6.8 26.2 7.3 25.8 7.7C25.2 8.3 24.4 8.8 23.7 9.1" stroke="#7C2D12" stroke-width="1.1" stroke-linecap="round" />
+</svg>

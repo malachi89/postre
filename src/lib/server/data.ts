@@ -1,7 +1,11 @@
 import { prisma } from "@/lib/db";
 import { parseJsonField, stringifyJson } from "@/lib/json";
+import { extractPostmanScripts } from "@/lib/postman-importer";
 import type {
   ApiCollection,
+  ApiCollectionRunReport,
+  ApiCollectionRunStep,
+  ApiCollectionRunSummary,
   ApiEnvironment,
   ApiFolder,
   ApiHistoryEntry,
@@ -89,6 +93,8 @@ export function serializeRequest(request: {
   queryParamsJson: string;
   bodyMode: string;
   bodyRaw: string | null;
+  preRequestScript?: string | null;
+  postRequestScript?: string | null;
   authJson: string;
   collectionId: string;
   folderId: string | null;
@@ -107,10 +113,36 @@ export function serializeRequest(request: {
     queryParams: parseJsonField<KeyValueRow[]>(request.queryParamsJson, []),
     bodyMode: normalizeBodyMode(request.bodyMode),
     bodyRaw: request.bodyRaw ?? "",
+    preRequestScript: request.preRequestScript ?? "",
+    postRequestScript: request.postRequestScript ?? "",
     auth: parseJsonField<AuthConfig>(request.authJson, DEFAULT_AUTH),
     variables: (request.variables ?? []).map(serializeVariable),
     createdAt: request.createdAt.toISOString(),
     updatedAt: request.updatedAt.toISOString()
+  };
+}
+
+export function getScriptFields(record: {
+  preRequestScript?: string | null;
+  postRequestScript?: string | null;
+  metadataJson?: string | null;
+}) {
+  const savedPreRequestScript = record.preRequestScript ?? "";
+  const savedPostRequestScript = record.postRequestScript ?? "";
+
+  if (savedPreRequestScript.trim() || savedPostRequestScript.trim()) {
+    return {
+      preRequestScript: savedPreRequestScript,
+      postRequestScript: savedPostRequestScript
+    };
+  }
+
+  const metadata = parseJsonField<Record<string, unknown>>(record.metadataJson, {});
+  const fallback = extractPostmanScripts(Array.isArray(metadata.event) ? metadata.event : []);
+
+  return {
+    preRequestScript: fallback.preRequestScript,
+    postRequestScript: fallback.postRequestScript
   };
 }
 
@@ -175,6 +207,8 @@ export function requestToPrismaInput(draft: RequestDraft) {
     queryParamsJson: stringifyJson(markSecretRows(draft.queryParams)),
     bodyMode: draft.bodyMode,
     bodyRaw: draft.bodyRaw,
+    preRequestScript: draft.preRequestScript ?? "",
+    postRequestScript: draft.postRequestScript ?? "",
     authJson: stringifyJson(draft.auth ?? DEFAULT_AUTH),
     folderId: draft.folderId ?? null
   };
@@ -195,6 +229,9 @@ function serializeCollection(collection: {
   id: string;
   name: string;
   description: string | null;
+  preRequestScript?: string | null;
+  postRequestScript?: string | null;
+  metadataJson?: string;
   createdAt: Date;
   updatedAt: Date;
   folders: Array<{
@@ -202,6 +239,9 @@ function serializeCollection(collection: {
     name: string;
     collectionId: string;
     parentId: string | null;
+    preRequestScript?: string | null;
+    postRequestScript?: string | null;
+    metadataJson?: string;
   }>;
   requests: Array<Parameters<typeof serializeRequest>[0]>;
   variables: Array<Parameters<typeof serializeVariable>[0]>;
@@ -214,11 +254,14 @@ function serializeCollection(collection: {
 
   const foldersById = new Map<string, ApiFolder>();
   for (const folder of collection.folders) {
+    const folderScripts = getScriptFields(folder);
     foldersById.set(folder.id, {
       id: folder.id,
       name: folder.name,
       collectionId: folder.collectionId,
       parentId: folder.parentId,
+      preRequestScript: folderScripts.preRequestScript,
+      postRequestScript: folderScripts.postRequestScript,
       children: [],
       requests: requestsByFolder.get(folder.id) ?? []
     });
@@ -233,15 +276,133 @@ function serializeCollection(collection: {
     }
   }
 
+  const collectionScripts = getScriptFields(collection);
+
   return {
     id: collection.id,
     name: collection.name,
     description: collection.description,
+    preRequestScript: collectionScripts.preRequestScript,
+    postRequestScript: collectionScripts.postRequestScript,
     folders: rootFolders,
     requests: requestsByFolder.get(null) ?? [],
     variables: collection.variables.map(serializeVariable),
     createdAt: collection.createdAt.toISOString(),
     updatedAt: collection.updatedAt.toISOString()
+  };
+}
+
+export function serializeCollectionRunSummary(run: {
+  id: string;
+  collectionId: string;
+  targetType: string;
+  targetId: string;
+  targetName: string;
+  environmentId: string | null;
+  iterations: number;
+  delayMs: number;
+  stopOnError: boolean;
+  status: string;
+  requestOrderJson: string;
+  totalSteps: number;
+  completedSteps: number;
+  successCount: number;
+  errorCount: number;
+  createdAt: Date;
+  finishedAt: Date | null;
+}): ApiCollectionRunSummary {
+  return {
+    id: run.id,
+    collectionId: run.collectionId,
+    targetType: run.targetType === "folder" ? "folder" : "collection",
+    targetId: run.targetId,
+    targetName: run.targetName,
+    environmentId: run.environmentId,
+    iterations: run.iterations,
+    delayMs: run.delayMs,
+    stopOnError: run.stopOnError,
+    status:
+      run.status === "running" ||
+      run.status === "completed" ||
+      run.status === "completed_with_errors" ||
+      run.status === "stopped"
+        ? run.status
+        : "completed",
+    requestOrder: parseJsonField<string[]>(run.requestOrderJson, []),
+    totalSteps: run.totalSteps,
+    completedSteps: run.completedSteps,
+    successCount: run.successCount,
+    errorCount: run.errorCount,
+    createdAt: run.createdAt.toISOString(),
+    finishedAt: run.finishedAt?.toISOString() ?? null
+  };
+}
+
+export function serializeCollectionRunStep(step: {
+  id: string;
+  requestId: string | null;
+  iteration: number;
+  sequence: number;
+  requestName: string;
+  method: string;
+  resolvedUrl: string | null;
+  status: number | null;
+  statusText: string | null;
+  durationMs: number | null;
+  sizeBytes: number | null;
+  responseHeadersJson: string;
+  responseBodyPreview: string | null;
+  responseBodyTruncated: boolean;
+  error: string | null;
+  missingVariablesJson: string;
+  scriptResultsJson: string;
+  createdAt: Date;
+}): ApiCollectionRunStep {
+  return {
+    id: step.id,
+    requestId: step.requestId,
+    iteration: step.iteration,
+    sequence: step.sequence,
+    requestName: step.requestName,
+    method: normalizeMethod(step.method),
+    resolvedUrl: step.resolvedUrl,
+    status: step.status,
+    statusText: step.statusText,
+    durationMs: step.durationMs,
+    sizeBytes: step.sizeBytes,
+    responseHeaders: parseJsonField<KeyValueRow[]>(step.responseHeadersJson, []),
+    responseBodyPreview: step.responseBodyPreview,
+    responseBodyTruncated: step.responseBodyTruncated,
+    error: step.error,
+    missingVariables: parseJsonField<string[]>(step.missingVariablesJson, []),
+    scriptResults: parseJsonField<ApiCollectionRunStep["scriptResults"]>(step.scriptResultsJson, []),
+    createdAt: step.createdAt.toISOString()
+  };
+}
+
+export function serializeCollectionRunReport(run: {
+  id: string;
+  collectionId: string;
+  targetType: string;
+  targetId: string;
+  targetName: string;
+  environmentId: string | null;
+  iterations: number;
+  delayMs: number;
+  stopOnError: boolean;
+  status: string;
+  requestOrderJson: string;
+  totalSteps: number;
+  completedSteps: number;
+  successCount: number;
+  errorCount: number;
+  createdAt: Date;
+  finishedAt: Date | null;
+  steps: Array<Parameters<typeof serializeCollectionRunStep>[0]>;
+}): ApiCollectionRunReport {
+  return {
+    run: serializeCollectionRunSummary(run),
+    steps: run.steps.map(serializeCollectionRunStep)
   };
 }
 

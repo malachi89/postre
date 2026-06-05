@@ -6,10 +6,82 @@
   color-scheme: light;
   --background: #f6f7f9;
   --foreground: #111827;
+  --surface: #ffffff;
+  --surface-2: #fbfcfd;
+  --surface-3: #eef2f7;
+  --border: #dbe3ee;
+  --muted: #64748b;
+  --muted-strong: #334155;
+  --accent: #0f766e;
+  --accent-strong: #115e59;
+  --accent-soft: #ecfeff;
+  --accent-soft-strong: #ccfbf1;
+  --danger-soft: #fef2f2;
+  --danger: #b91c1c;
+  --warning-soft: #fffbeb;
+  --warning: #b45309;
+  --code-bg: #0f172a;
+  --code-fg: #f8fafc;
+  --overlay: rgba(15, 23, 42, 0.45);
+  --shadow-panel: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --background: #0b1220;
+    --foreground: #e5eefb;
+    --surface: #101a2b;
+    --surface-2: #0f1725;
+    --surface-3: #162235;
+    --border: #22324a;
+    --muted: #8ea1bf;
+    --muted-strong: #d2dded;
+    --accent: #2dd4bf;
+    --accent-strong: #5eead4;
+    --accent-soft: rgba(45, 212, 191, 0.14);
+    --accent-soft-strong: rgba(45, 212, 191, 0.24);
+    --danger-soft: rgba(244, 63, 94, 0.14);
+    --danger: #fca5a5;
+    --warning-soft: rgba(245, 158, 11, 0.14);
+    --warning: #fbbf24;
+    --code-bg: #020617;
+    --code-fg: #f8fafc;
+    --overlay: rgba(2, 6, 23, 0.66);
+    --shadow-panel: 0 10px 30px rgba(2, 6, 23, 0.32);
+  }
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #0b1220;
+  --foreground: #e5eefb;
+  --surface: #101a2b;
+  --surface-2: #0f1725;
+  --surface-3: #162235;
+  --border: #22324a;
+  --muted: #8ea1bf;
+  --muted-strong: #d2dded;
+  --accent: #2dd4bf;
+  --accent-strong: #5eead4;
+  --accent-soft: rgba(45, 212, 191, 0.14);
+  --accent-soft-strong: rgba(45, 212, 191, 0.24);
+  --danger-soft: rgba(244, 63, 94, 0.14);
+  --danger: #fca5a5;
+  --warning-soft: rgba(245, 158, 11, 0.14);
+  --warning: #fbbf24;
+  --code-bg: #020617;
+  --code-fg: #f8fafc;
+  --overlay: rgba(2, 6, 23, 0.66);
+  --shadow-panel: 0 10px 30px rgba(2, 6, 23, 0.32);
 }
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
 }
 
 body {
@@ -29,4 +101,107 @@ textarea {
 pre {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+html[data-theme="dark"] .bg-white {
+  background-color: var(--surface);
+}
+
+html[data-theme="dark"] .bg-slate-50 {
+  background-color: var(--surface-2);
+}
+
+html[data-theme="dark"] .bg-slate-100 {
+  background-color: var(--surface-3);
+}
+
+html[data-theme="dark"] .bg-amber-50 {
+  background-color: var(--warning-soft);
+}
+
+html[data-theme="dark"] .bg-rose-50 {
+  background-color: var(--danger-soft);
+}
+
+html[data-theme="dark"] .bg-teal-50 {
+  background-color: var(--accent-soft);
+}
+
+html[data-theme="dark"] .bg-slate-950 {
+  background-color: var(--code-bg);
+}
+
+html[data-theme="dark"] .bg-slate-950\/45 {
+  background-color: var(--overlay);
+}
+
+html[data-theme="dark"] .border-slate-100,
+html[data-theme="dark"] .border-slate-200,
+html[data-theme="dark"] .border-slate-300 {
+  border-color: var(--border);
+}
+
+html[data-theme="dark"] .border-amber-200 {
+  border-color: rgba(245, 158, 11, 0.24);
+}
+
+html[data-theme="dark"] .border-rose-200 {
+  border-color: rgba(244, 63, 94, 0.24);
+}
+
+html[data-theme="dark"] .border-teal-200 {
+  border-color: rgba(45, 212, 191, 0.24);
+}
+
+html[data-theme="dark"] .text-slate-950,
+html[data-theme="dark"] .text-slate-900 {
+  color: var(--foreground);
+}
+
+html[data-theme="dark"] .text-slate-800,
+html[data-theme="dark"] .text-slate-700 {
+  color: var(--muted-strong);
+}
+
+html[data-theme="dark"] .text-slate-600,
+html[data-theme="dark"] .text-slate-500,
+html[data-theme="dark"] .text-slate-400 {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .text-teal-800,
+html[data-theme="dark"] .text-teal-700 {
+  color: var(--accent-strong);
+}
+
+html[data-theme="dark"] .text-amber-800 {
+  color: var(--warning);
+}
+
+html[data-theme="dark"] .text-rose-700,
+html[data-theme="dark"] .text-rose-600 {
+  color: var(--danger);
+}
+
+html[data-theme="dark"] .hover\:bg-slate-50:hover,
+html[data-theme="dark"] .hover\:bg-slate-100:hover,
+html[data-theme="dark"] .hover\:bg-white:hover,
+html[data-theme="dark"] .group:hover .group-hover\:bg-white {
+  background-color: var(--surface-3);
+}
+
+html[data-theme="dark"] .hover\:bg-teal-50:hover {
+  background-color: var(--accent-soft);
+}
+
+html[data-theme="dark"] .hover\:bg-rose-50:hover {
+  background-color: var(--danger-soft);
+}
+
+html[data-theme="dark"] .active\:bg-teal-100:active {
+  background-color: var(--accent-soft-strong);
+}
+
+html[data-theme="dark"] .shadow-panel {
+  box-shadow: var(--shadow-panel);
 }

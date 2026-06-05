@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   detectPostmanPayload,
+  normalizePostmanCollection,
   normalizePostmanEnvironment,
   previewPostmanImport
 } from "@/lib/postman-importer";
@@ -10,13 +11,35 @@ const collection = {
     name: "Users API",
     schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  event: [
+    {
+      listen: "prerequest",
+      script: { exec: ["pm.collectionVariables.set('tenant', 'main');"] }
+    }
+  ],
   variable: [{ key: "baseUrl", value: "https://api.example", enabled: true }],
   item: [
     {
       name: "Users",
+      event: [
+        {
+          listen: "test",
+          script: { exec: ["pm.collectionVariables.set('lastFolder', 'Users');"] }
+        }
+      ],
       item: [
         {
           name: "Get user",
+          event: [
+            {
+              listen: "prerequest",
+              script: { exec: ["pm.environment.set('token', 'abc');"] }
+            },
+            {
+              listen: "test",
+              script: { exec: ["pm.environment.set('lastStatus', pm.response.code);"] }
+            }
+          ],
           request: {
             method: "GET",
             url: {
@@ -68,6 +91,26 @@ describe("postman importer", () => {
       requestCount: 2,
       variableCount: 1
     });
+  });
+
+  it("extracts request-level pre-request and post-request scripts", () => {
+    const normalized = normalizePostmanCollection(collection);
+    expect(normalized.preRequestScript).toBe("pm.collectionVariables.set('tenant', 'main');");
+    const folder = normalized.items[0];
+    expect(folder.type).toBe("folder");
+    if (folder.type !== "folder") {
+      throw new Error("Expected folder");
+    }
+    expect(folder.postRequestScript).toBe("pm.collectionVariables.set('lastFolder', 'Users');");
+
+    const item = folder.items[0];
+    expect(item.type).toBe("request");
+    if (item.type !== "request") {
+      throw new Error("Expected request");
+    }
+
+    expect(item.request.preRequestScript).toBe("pm.environment.set('token', 'abc');");
+    expect(item.request.postRequestScript).toBe("pm.environment.set('lastStatus', pm.response.code);");
   });
 
   it("detects and normalizes Postman environments", () => {

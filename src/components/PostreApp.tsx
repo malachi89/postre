@@ -1,7 +1,11 @@
 "use client";
 
 import {
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  Copy,
   Eye,
   EyeOff,
   FileJson,
@@ -10,17 +14,21 @@ import {
   FolderPlus,
   History,
   Loader2,
+  Moon,
   Pencil,
+  Play,
   Plus,
   Save,
   Send,
   Settings,
+  Sun,
   Trash2,
   Upload
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ApiCollection,
+  ApiCollectionRunReport,
   ApiFolder,
   ApiHistoryEntry,
   ApiRequest,
@@ -31,26 +39,229 @@ import type {
   ImportPreview,
   KeyValueRow,
   RequestDraft,
+  ScriptExecutionResult,
   SendResult,
   VariableValue
 } from "@/lib/types";
 import { HTTP_METHODS } from "@/lib/types";
+import { CurlParseError, parseCurlToRequestDraft, requestDraftToCurl } from "@/lib/curl";
 import { inferIsSecret, maskSecret } from "@/lib/secret-utils";
+import {
+  applyVariableAutocomplete,
+  findVariableAutocompleteMatch,
+  getVariableSuggestions
+} from "@/lib/variable-autocomplete";
+import type { VariableAutocompleteMatch, VariableLookupLike } from "@/lib/variable-autocomplete";
 
-type SendResponseState =
-  | (SendResult & {
-      resolvedDraft?: RequestDraft;
-    })
-  | {
-      error: string;
-      missingVariables?: string[];
-      resolvedDraft?: RequestDraft;
-      durationMs?: number;
-    };
+type SendSuccessResponseState = SendResult & {
+  resolvedDraft?: RequestDraft;
+  scriptResults?: ScriptExecutionResult[];
+};
+
+type SendErrorResponseState = {
+  error: string;
+  missingVariables?: string[];
+  resolvedDraft?: RequestDraft;
+  durationMs?: number;
+  scriptResults?: ScriptExecutionResult[];
+};
+
+type SendResponseState = SendSuccessResponseState | SendErrorResponseState;
+type CollectionRunnerTarget = { type: "collection" | "folder"; id: string; name: string };
 
 const EMPTY_AUTH: AuthConfig = { type: "none" };
-const REQUEST_TABS = ["auth", "headers", "query", "body"] as const;
+const REQUEST_TABS = ["auth", "headers", "query", "body", "scripts"] as const;
 type RequestTab = (typeof REQUEST_TABS)[number];
+const SCRIPT_TABS = ["pre-request", "post-request"] as const;
+type ScriptTab = (typeof SCRIPT_TABS)[number];
+const RESPONSE_HANDLE_HEIGHT = 12;
+const RESPONSE_PANEL_MIN_HEIGHT = 220;
+const REQUEST_EDITOR_MIN_HEIGHT = 260;
+const THEME_STORAGE_KEY = "postre-theme";
+const TOKEN_PATTERN = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
+type Theme = "light" | "dark";
+type VariableLookup = VariableLookupLike;
+type SelectionOffsets = { start: number; end: number };
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function readPreferredTheme(): Theme {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "light" || stored === "dark") {
+      return stored;
+    }
+  } catch {
+    // Ignore storage access issues and fall back to the system setting.
+  }
+
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+}
+
+function variableValue(variable: VariableValue) {
+  return variable.currentValue || variable.initialValue;
+}
+
+function buildVariableLookup({
+  global,
+  environment,
+  collection,
+  request
+}: {
+  global: VariableValue[];
+  environment: VariableValue[];
+  collection: VariableValue[];
+  request: VariableValue[];
+}): VariableLookup {
+  const lookup: VariableLookup = {};
+
+  for (const scope of [global, environment, collection, request]) {
+    for (const variable of scope) {
+      if (!variable.enabled || !variable.key) {
+        continue;
+      }
+
+      lookup[variable.key] = {
+        value: variableValue(variable),
+        isSecret: variable.isSecret
+      };
+    }
+  }
+
+  return lookup;
+}
+
+function readEditableText(element: HTMLDivElement, multiline: boolean) {
+  const raw = multiline ? element.innerText : element.textContent ?? "";
+  const normalized = raw.replace(/\r/g, "");
+
+  return multiline ? normalized.replace(/\n$/, "") : normalized.replace(/\n/g, "");
+}
+
+function getSelectionOffsets(root: HTMLElement): SelectionOffsets | null {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+    return null;
+  }
+
+  const startRange = range.cloneRange();
+  startRange.selectNodeContents(root);
+  startRange.setEnd(range.startContainer, range.startOffset);
+
+  const endRange = range.cloneRange();
+  endRange.selectNodeContents(root);
+  endRange.setEnd(range.endContainer, range.endOffset);
+
+  return {
+    start: startRange.toString().length,
+    end: endRange.toString().length
+  };
+}
+
+function resolveTextPosition(root: HTMLElement, targetOffset: number) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let current = walker.nextNode();
+  let consumed = 0;
+  let lastTextNode: Text | null = null;
+
+  while (current) {
+    const textNode = current as Text;
+    const nextConsumed = consumed + textNode.data.length;
+
+    if (targetOffset <= nextConsumed) {
+      return {
+        node: textNode,
+        offset: targetOffset - consumed
+      };
+    }
+
+    consumed = nextConsumed;
+    lastTextNode = textNode;
+    current = walker.nextNode();
+  }
+
+  if (lastTextNode) {
+    return {
+      node: lastTextNode,
+      offset: lastTextNode.data.length
+    };
+  }
+
+  return {
+    node: root,
+    offset: 0
+  };
+}
+
+function restoreSelection(root: HTMLElement, selectionOffsets: SelectionOffsets) {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  const start = resolveTextPosition(root, selectionOffsets.start);
+  const end = resolveTextPosition(root, selectionOffsets.end);
+
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function escapeHtml(text: string) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+
+function renderTokenizedHtml(value: string, variableLookup: VariableLookup) {
+  const parts: string[] = [];
+  let match: RegExpExecArray | null;
+  let lastIndex = 0;
+  TOKEN_PATTERN.lastIndex = 0;
+
+  while ((match = TOKEN_PATTERN.exec(value)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(escapeHtml(value.slice(lastIndex, match.index)));
+    }
+
+    const tokenText = match[0];
+    const variableName = match[1];
+    const resolvedVariable = variableLookup[variableName];
+    const hasValue = resolvedVariable !== undefined;
+
+    const colorClass = hasValue
+      ? "border-teal-200 bg-teal-50 text-teal-800"
+      : "border-amber-200 bg-amber-50 text-amber-800";
+
+    parts.push(
+      `<span class="mx-px inline-flex rounded-full border px-2 py-0.5 align-baseline text-[0.95em] leading-5 ${colorClass}" title="${escapeHtml(hasValue ? resolvedVariable.value : `Variable not found: ${variableName}`)}">${escapeHtml(tokenText)}</span>`
+    );
+
+    lastIndex = match.index + tokenText.length;
+  }
+
+  if (lastIndex < value.length) {
+    parts.push(escapeHtml(value.slice(lastIndex)));
+  }
+
+  return parts.join("");
+}
 
 function CakeIcon({
   size,
@@ -70,17 +281,299 @@ function CakeIcon({
   );
 }
 
+function TokenizedField({
+  value,
+  onChange,
+  placeholder,
+  ariaLabel,
+  variableLookup,
+  disabled = false,
+  multiline = false,
+  className = ""
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  ariaLabel?: string;
+  variableLookup: VariableLookup;
+  disabled?: boolean;
+  multiline?: boolean;
+  className?: string;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const selectionRef = useRef<SelectionOffsets | null>(null);
+  const isComposingRef = useRef(false);
+  const [autocomplete, setAutocomplete] = useState<{
+    match: VariableAutocompleteMatch;
+    activeIndex: number;
+  } | null>(null);
+  const suggestions = useMemo(
+    () => (autocomplete ? getVariableSuggestions(variableLookup, autocomplete.match.query) : []),
+    [autocomplete, variableLookup]
+  );
+  const activeSuggestionIndex = autocomplete ? clamp(autocomplete.activeIndex, 0, Math.max(suggestions.length - 1, 0)) : 0;
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || document.activeElement !== element || isComposingRef.current || !selectionRef.current) {
+      return;
+    }
+
+    restoreSelection(element, selectionRef.current);
+  }, [value]);
+
+  function updateAutocomplete(nextValue: string, nextSelection: SelectionOffsets | null) {
+    const match = nextSelection ? findVariableAutocompleteMatch(nextValue, nextSelection.start, nextSelection.end) : null;
+
+    if (!match) {
+      setAutocomplete(null);
+      return;
+    }
+
+    const nextSuggestions = getVariableSuggestions(variableLookup, match.query);
+    const maxIndex = Math.max(nextSuggestions.length - 1, 0);
+
+    setAutocomplete((current) => ({
+      match,
+      activeIndex:
+        current &&
+        current.match.query === match.query &&
+        current.match.replaceFrom === match.replaceFrom &&
+        current.match.replaceTo === match.replaceTo
+          ? clamp(current.activeIndex, 0, maxIndex)
+          : 0
+    }));
+  }
+
+  function refreshAutocompleteFromDom() {
+    const element = ref.current;
+    if (!element) {
+      return;
+    }
+
+    updateAutocomplete(readEditableText(element, multiline), getSelectionOffsets(element));
+  }
+
+  function syncValue() {
+    const element = ref.current;
+    if (!element) {
+      return;
+    }
+
+    const nextSelection = getSelectionOffsets(element);
+    const nextValue = readEditableText(element, multiline);
+
+    selectionRef.current = nextSelection;
+    updateAutocomplete(nextValue, nextSelection);
+    onChange(nextValue);
+  }
+
+  function selectSuggestion(index: number) {
+    const element = ref.current;
+    const suggestion = suggestions[index];
+    if (!element || !suggestion) {
+      return;
+    }
+
+    const nextValue = readEditableText(element, multiline);
+    const nextSelection = getSelectionOffsets(element) ?? selectionRef.current;
+    const match =
+      nextSelection ? findVariableAutocompleteMatch(nextValue, nextSelection.start, nextSelection.end) : autocomplete?.match ?? null;
+
+    if (!match) {
+      setAutocomplete(null);
+      return;
+    }
+
+    const result = applyVariableAutocomplete(nextValue, match, suggestion.key);
+    selectionRef.current = { start: result.selection, end: result.selection };
+    setAutocomplete(null);
+    onChange(result.value);
+    element.focus();
+  }
+
+  return (
+    <div className="relative">
+      {!value ? (
+        <span
+          className={`pointer-events-none absolute left-0 top-0 select-none text-sm text-slate-400 ${
+            multiline ? "px-3 py-3 font-mono whitespace-pre-wrap" : "px-3 py-2.5 font-mono"
+          }`}
+        >
+          {placeholder}
+        </span>
+      ) : null}
+      <div
+        ref={ref}
+        className={[
+          "w-full rounded border border-slate-300 bg-white font-mono text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100",
+          multiline
+            ? "min-h-64 overflow-auto whitespace-pre-wrap break-words p-3 leading-6"
+            : "min-h-[2.25rem] overflow-x-auto overflow-y-hidden whitespace-pre px-3 py-1.5 leading-5",
+          disabled ? "cursor-not-allowed bg-slate-50 text-slate-400" : "",
+          className
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        contentEditable={!disabled}
+        suppressContentEditableWarning
+        role="textbox"
+        aria-label={ariaLabel}
+        aria-multiline={multiline}
+        onInput={() => {
+          if (!isComposingRef.current) {
+            syncValue();
+          }
+        }}
+        onBlur={() => {
+          selectionRef.current = null;
+          setAutocomplete(null);
+        }}
+        onKeyDown={(event) => {
+          if (autocomplete) {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setAutocomplete((current) =>
+                current
+                  ? {
+                      ...current,
+                      activeIndex: current.activeIndex + 1
+                    }
+                  : current
+              );
+              return;
+            }
+
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setAutocomplete((current) =>
+                current
+                  ? {
+                      ...current,
+                      activeIndex: Math.max(current.activeIndex - 1, 0)
+                    }
+                  : current
+              );
+              return;
+            }
+
+            if ((event.key === "Enter" || event.key === "Tab") && suggestions.length > 0) {
+              event.preventDefault();
+              selectSuggestion(activeSuggestionIndex);
+              return;
+            }
+
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setAutocomplete(null);
+              return;
+            }
+          }
+
+          if (!multiline && event.key === "Enter") {
+            event.preventDefault();
+          }
+        }}
+        onKeyUp={() => {
+          if (!isComposingRef.current) {
+            refreshAutocompleteFromDom();
+          }
+        }}
+        onMouseUp={() => {
+          refreshAutocompleteFromDom();
+        }}
+        onFocus={() => {
+          refreshAutocompleteFromDom();
+        }}
+        onCompositionStart={() => {
+          isComposingRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          isComposingRef.current = false;
+          syncValue();
+        }}
+        dangerouslySetInnerHTML={{ __html: renderTokenizedHtml(value, variableLookup) }}
+      />
+      {autocomplete ? (
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+          <div className="border-b border-slate-100 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Variables disponibles
+          </div>
+          {suggestions.length > 0 ? (
+            <div className="max-h-56 overflow-auto py-1">
+              {suggestions.map((suggestion, index) => {
+                const active = index === activeSuggestionIndex;
+
+                return (
+                  <button
+                    key={suggestion.key}
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm ${
+                      active ? "bg-teal-50 text-teal-900" : "text-slate-700 hover:bg-slate-50"
+                    }`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      selectSuggestion(index);
+                    }}
+                    type="button"
+                  >
+                    <span className="font-mono font-semibold">{suggestion.key}</span>
+                    <span className="max-w-[14rem] truncate text-xs text-slate-500">
+                      {suggestion.isSecret ? maskSecret(suggestion.value) : suggestion.value || "Sin valor"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="px-3 py-3 text-sm text-slate-500">No hay variables que coincidan.</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function PostreApp() {
   const [data, setData] = useState<AppData | null>(null);
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme>("light");
+  const [themeReady, setThemeReady] = useState(false);
   const [draft, setDraft] = useState<RequestDraft | null>(null);
   const [response, setResponse] = useState<SendResponseState | null>(null);
+  const [responsePanelHeight, setResponsePanelHeight] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [showEnvironments, setShowEnvironments] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showHistoryPanel, setShowHistoryPanel] = useState(true);
+  const [runnerTarget, setRunnerTarget] = useState<CollectionRunnerTarget | null>(null);
+  const [runnerReport, setRunnerReport] = useState<ApiCollectionRunReport | null>(null);
+  const responseSplitRef = useRef<HTMLDivElement | null>(null);
+  const draftRef = useRef<RequestDraft | null>(draft);
+  draftRef.current = draft;
+
+  useEffect(() => {
+    if (!draft?.id) return;
+
+    const timer = setTimeout(async () => {
+      const current = draftRef.current;
+      if (!current?.id) return;
+
+      try {
+        await api(`/api/requests/${current.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(current)
+        });
+        setData(await api<AppData>("/api/data"));
+      } catch {
+        // Auto-save errors are silently ignored
+      }
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [draft, setData]);
 
   const refresh = useCallback(async () => {
     const nextData = await api<AppData>("/api/data");
@@ -109,6 +602,70 @@ export function PostreApp() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const nextTheme = readPreferredTheme();
+    setTheme(nextTheme);
+    setThemeReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!themeReady) {
+      return;
+    }
+
+    applyTheme(theme);
+
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Ignore storage failures so theme switching still works.
+    }
+  }, [theme, themeReady]);
+
+  useEffect(() => {
+    if (!draft || responsePanelHeight !== null) {
+      return;
+    }
+
+    const container = responseSplitRef.current;
+    if (!container) {
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+    const maxHeight = Math.max(
+      RESPONSE_PANEL_MIN_HEIGHT,
+      rect.height - REQUEST_EDITOR_MIN_HEIGHT - RESPONSE_HANDLE_HEIGHT
+    );
+    const initialHeight = Math.round((rect.height - RESPONSE_HANDLE_HEIGHT) / 2);
+    setResponsePanelHeight(clamp(initialHeight, RESPONSE_PANEL_MIN_HEIGHT, maxHeight));
+  }, [draft, responsePanelHeight]);
+
+  useEffect(() => {
+    function handleResize() {
+      const container = responseSplitRef.current;
+      if (!container) {
+        return;
+      }
+
+      setResponsePanelHeight((current) => {
+        if (current === null) {
+          return current;
+        }
+
+        const rect = container.getBoundingClientRect();
+        const maxHeight = Math.max(
+          RESPONSE_PANEL_MIN_HEIGHT,
+          rect.height - REQUEST_EDITOR_MIN_HEIGHT - RESPONSE_HANDLE_HEIGHT
+        );
+        return clamp(current, RESPONSE_PANEL_MIN_HEIGHT, maxHeight);
+      });
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const activeEnvironmentId = data?.activeEnvironmentId ?? null;
   async function createCollection() {
@@ -218,6 +775,8 @@ export function PostreApp() {
         queryParams: [],
         bodyMode: "none",
         bodyRaw: "",
+        preRequestScript: "",
+        postRequestScript: "",
         auth: EMPTY_AUTH
       })
     });
@@ -285,6 +844,30 @@ export function PostreApp() {
     }
   }
 
+  async function saveDraftIfInsideTarget(target: CollectionRunnerTarget) {
+    if (!draft?.id || !data) {
+      return;
+    }
+
+    const request = findRequest(data.collections, draft.id);
+    if (!request) {
+      return;
+    }
+
+    if (target.type === "collection") {
+      if (request.collectionId !== target.id) {
+        return;
+      }
+    } else if (
+      request.folderId !== target.id &&
+      !isFolderDescendant(data.collections, request.folderId, target.id)
+    ) {
+      return;
+    }
+
+    await saveDraft(false);
+  }
+
   function selectRequest(request: ApiRequest) {
     setSelectedRequestId(request.id);
     setSelectedCollectionId(request.collectionId);
@@ -310,16 +893,88 @@ export function PostreApp() {
       queryParams: [],
       bodyMode: "none",
       bodyRaw: "",
+      preRequestScript: "",
+      postRequestScript: "",
       auth: EMPTY_AUTH
     });
     setSelectedRequestId(null);
     setResponse(null);
   }
 
+  function beginResponseResize(event: React.PointerEvent<HTMLButtonElement>) {
+    const container = responseSplitRef.current;
+    if (!container) {
+      return;
+    }
+
+    event.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const minHeight = RESPONSE_PANEL_MIN_HEIGHT;
+    const maxHeight = Math.max(
+      minHeight,
+      rect.height - REQUEST_EDITOR_MIN_HEIGHT - RESPONSE_HANDLE_HEIGHT
+    );
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+
+    const updateHeight = (clientY: number) => {
+      const nextHeight = clamp(Math.round(rect.bottom - clientY), minHeight, maxHeight);
+      setResponsePanelHeight(nextHeight);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+    };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      updateHeight(moveEvent.clientY);
+    };
+
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "row-resize";
+    updateHeight(event.clientY);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", cleanup, { once: true });
+    window.addEventListener("pointercancel", cleanup, { once: true });
+  }
+
   const responseBody = useMemo(() => formatResponseBody(response), [response]);
+  const selectedCollection = useMemo(
+    () =>
+      draft?.collectionId && data
+        ? data.collections.find((collection) => collection.id === draft.collectionId) ?? null
+        : null,
+    [data, draft?.collectionId]
+  );
+  const selectedRequest = useMemo(
+    () => (draft?.id && data ? findRequest(data.collections, draft.id) : null),
+    [data, draft?.id]
+  );
+  const activeEnvironment = useMemo(
+    () =>
+      activeEnvironmentId && data
+        ? data.environments.find((environment) => environment.id === activeEnvironmentId) ?? null
+        : null,
+    [activeEnvironmentId, data]
+  );
+  const variableLookup = useMemo(
+    () =>
+      buildVariableLookup({
+        global: data?.globalVariables ?? [],
+        environment: activeEnvironment?.variables ?? [],
+        collection: selectedCollection?.variables ?? [],
+        request: selectedRequest?.variables ?? []
+      }),
+    [activeEnvironment?.variables, data?.globalVariables, selectedCollection?.variables, selectedRequest?.variables]
+  );
+  const isDarkTheme = theme === "dark";
 
   return (
-    <main className="flex h-screen min-h-[720px] flex-col bg-[#f6f7f9] text-slate-950">
+    <main className="flex h-screen min-h-[720px] flex-col bg-[var(--background)] text-[var(--foreground)]">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4">
         <div className="flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded bg-amber-500 text-white">
@@ -332,6 +987,16 @@ export function PostreApp() {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex h-9 w-9 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+            onClick={() => setTheme(isDarkTheme ? "light" : "dark")}
+            aria-label={isDarkTheme ? "Switch to light theme" : "Switch to dark theme"}
+            aria-pressed={isDarkTheme}
+            title={isDarkTheme ? "Switch to light theme" : "Switch to dark theme"}
+          >
+            {isDarkTheme ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
           <select
             className="h-9 min-w-44 rounded border border-slate-300 bg-white px-3 text-sm"
             value={activeEnvironmentId ?? ""}
@@ -403,52 +1068,108 @@ export function PostreApp() {
                   onDeleteCollection={deleteCollection}
                   onRenameFolder={renameFolder}
                   onDeleteFolder={deleteFolder}
+                  onRunCollection={(collection) =>
+                    setRunnerTarget({ type: "collection", id: collection.id, name: collection.name })
+                  }
+                  onRunFolder={(folder) =>
+                    setRunnerTarget({ type: "folder", id: folder.id, name: folder.name })
+                  }
                 />
               ))
             )}
           </div>
 
-          <div className="max-h-64 border-t border-slate-200">
-            <div className="flex h-10 items-center gap-2 px-3 text-sm font-semibold text-slate-700">
-              <History size={15} />
-              History
-            </div>
-            <div className="max-h-52 overflow-auto px-2 pb-2">
-              {data?.history.length ? (
-                data.history.map((entry) => (
+          <div className="border-t border-slate-200">
+            {showHistoryPanel ? (
+              <>
+                <div className="flex h-10 items-center justify-between gap-2 px-3 text-sm font-semibold text-slate-700">
+                  <div className="flex items-center gap-2">
+                    <History size={15} />
+                    History
+                  </div>
                   <button
-                    key={entry.id}
-                    className="mb-1 w-full rounded border border-transparent px-2 py-1.5 text-left text-xs hover:border-slate-200 hover:bg-slate-50"
-                    onClick={() => openHistory(entry)}
+                    type="button"
+                    className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                    onClick={() => setShowHistoryPanel(false)}
+                    aria-label="Hide history panel"
+                    title="Hide history panel"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-teal-700">{entry.method}</span>
-                      <span className={entry.error ? "text-rose-600" : "text-slate-500"}>
-                        {entry.error ? "ERR" : entry.status}
-                      </span>
-                    </div>
-                    <div className="truncate text-slate-500">{entry.url}</div>
+                    Hide
                   </button>
-                ))
-              ) : (
-                <p className="px-2 pb-3 text-xs text-slate-500">No requests sent yet.</p>
-              )}
-            </div>
+                </div>
+                <div className="max-h-52 overflow-auto px-2 pb-2">
+                  {data?.history.length ? (
+                    data.history.map((entry) => (
+                      <button
+                        key={entry.id}
+                        className="mb-1 w-full rounded border border-transparent px-2 py-1.5 text-left text-xs hover:border-slate-200 hover:bg-slate-50"
+                        onClick={() => openHistory(entry)}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-teal-700">{entry.method}</span>
+                          <span className={entry.error ? "text-rose-600" : "text-slate-500"}>
+                            {entry.error ? "ERR" : entry.status}
+                          </span>
+                        </div>
+                        <div className="truncate text-slate-500">{entry.url}</div>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="px-2 pb-3 text-xs text-slate-500">No requests sent yet.</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="flex h-10 w-full items-center justify-between gap-2 px-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                onClick={() => setShowHistoryPanel(true)}
+                aria-label="Show history panel"
+                title="Show history panel"
+              >
+                <div className="flex items-center gap-2">
+                  <History size={15} />
+                  History
+                </div>
+                <span className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600">
+                  Show
+                </span>
+              </button>
+            )}
           </div>
         </aside>
 
-        <section className="flex min-h-0 flex-col bg-[#fbfcfd]">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]">
           {draft ? (
-            <div className="flex min-h-0 flex-1 flex-col">
-              <RequestEditor
-                draft={draft}
-                busy={busy}
-                onChange={setDraft}
-                onSave={() => void saveDraft()}
-                onSend={() => void sendRequest()}
-                onDelete={() => void deleteRequest()}
-              />
-              <ResponsePanel response={response} body={responseBody} busy={busy} />
+            <div ref={responseSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <RequestEditor
+                  draft={draft}
+                  busy={busy}
+                  variableLookup={variableLookup}
+                  onChange={setDraft}
+                  onSave={() => void saveDraft()}
+                  onSend={() => void sendRequest()}
+                  onDelete={() => void deleteRequest()}
+                />
+              </div>
+              <button
+                className="group flex h-3 shrink-0 items-center justify-center border-y border-slate-200 bg-[var(--surface-3)] transition hover:bg-teal-50 active:bg-teal-100"
+                onPointerDown={beginResponseResize}
+                type="button"
+                aria-label="Resize response panel"
+                title="Drag to resize response panel"
+              >
+                <span className="h-1 w-14 rounded-full bg-slate-300 transition group-hover:bg-teal-400" />
+              </button>
+              <div
+                className="min-h-0 flex-none"
+                style={{
+                  height: responsePanelHeight === null ? "45%" : `${responsePanelHeight}px`
+                }}
+              >
+                <ResponsePanel response={response} body={responseBody} busy={busy} />
+              </div>
             </div>
           ) : (
             <div className="flex flex-1 items-center justify-center">
@@ -483,6 +1204,23 @@ export function PostreApp() {
           }}
         />
       ) : null}
+
+      {runnerTarget && data ? (
+        <CollectionRunnerModal
+          data={data}
+          target={runnerTarget}
+          initialReport={runnerReport}
+          onClose={() => {
+            setRunnerTarget(null);
+            setRunnerReport(null);
+          }}
+          onBeforeRun={() => saveDraftIfInsideTarget(runnerTarget)}
+          onRunComplete={async (report) => {
+            setRunnerReport(report);
+            await refresh();
+          }}
+        />
+      ) : null}
     </main>
   );
 }
@@ -490,6 +1228,7 @@ export function PostreApp() {
 function RequestEditor({
   draft,
   busy,
+  variableLookup,
   onChange,
   onSave,
   onSend,
@@ -497,23 +1236,117 @@ function RequestEditor({
 }: {
   draft: RequestDraft;
   busy: boolean;
+  variableLookup: VariableLookup;
   onChange: (draft: RequestDraft) => void;
   onSave: () => void;
   onSend: () => void;
   onDelete: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<RequestTab>("auth");
+  const [activeTab, setActiveTab] = useState<RequestTab | null>("auth");
+  const [activeScriptTab, setActiveScriptTab] = useState<ScriptTab>("pre-request");
+  const [showCodePanel, setShowCodePanel] = useState(true);
+  const [curlError, setCurlError] = useState<string | null>(null);
+  const [curlNotice, setCurlNotice] = useState<string | null>(null);
+  const generatedCurl = useMemo(() => requestDraftToCurl(draft), [draft]);
+
+  useEffect(() => {
+    setCurlError(null);
+    setCurlNotice(null);
+  }, [draft.id]);
+
+  useEffect(() => {
+    const hasPre = draft.preRequestScript.trim().length > 0;
+    const hasPost = draft.postRequestScript.trim().length > 0;
+
+    if (hasPre && !hasPost) {
+      setActiveScriptTab("pre-request");
+      return;
+    }
+
+    if (hasPost && !hasPre) {
+      setActiveScriptTab("post-request");
+      return;
+    }
+
+    setActiveScriptTab("pre-request");
+  }, [draft.id]);
+
+  async function copyCurl() {
+    setCurlError(null);
+    setCurlNotice(null);
+
+    if (!navigator.clipboard?.writeText) {
+      setCurlError("Clipboard is not available. Select the generated cURL and copy it manually.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(generatedCurl);
+      setCurlNotice("cURL copied.");
+    } catch {
+      setCurlError("Could not copy to clipboard. Select the generated cURL and copy it manually.");
+    }
+  }
+
+  function applyPastedCurl(text: string) {
+    setCurlError(null);
+    setCurlNotice(null);
+
+    try {
+      const nextDraft = parseCurlToRequestDraft(text, draft);
+      onChange(nextDraft);
+      setCurlNotice("cURL applied to the current request.");
+    } catch (error) {
+      setCurlError(
+        error instanceof CurlParseError || error instanceof Error
+          ? error.message
+          : "Could not parse the pasted cURL."
+      );
+    }
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col border-b border-slate-200 bg-white">
       <div className="border-b border-slate-200 p-4">
-        <div className="mb-3 flex items-center gap-2">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <input
-            className="h-10 min-w-0 flex-1 rounded border border-slate-300 px-3 text-sm font-semibold"
+            className="h-9 w-44 shrink-0 rounded border border-slate-300 px-3 text-xs font-semibold"
             value={draft.name}
             onChange={(event) => onChange({ ...draft, name: event.target.value })}
             aria-label="Request name"
           />
+          <div className="min-w-0 flex-1 overflow-x-auto">
+            <div className="flex min-w-max gap-2">
+              {REQUEST_TABS.map((tab) => {
+                const label =
+                  tab === "auth"
+                    ? "Auth"
+                    : tab === "headers"
+                      ? "Headers"
+                      : tab === "query"
+                        ? "Query Params"
+                        : tab === "body"
+                          ? "Body"
+                          : "Scripts";
+                const active = activeTab === tab;
+
+                return (
+                  <button
+                    key={tab}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                      active
+                        ? "border-teal-600 bg-teal-600 text-white"
+                        : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                    }`}
+                    onClick={() => setActiveTab((currentTab) => (currentTab === tab ? null : tab))}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <IconButton label="Save request" onClick={onSave}>
             <Save size={17} />
           </IconButton>
@@ -535,13 +1368,16 @@ function RequestEditor({
               </option>
             ))}
           </select>
-          <input
-            className="h-11 min-w-0 flex-1 rounded border border-slate-300 px-3 font-mono text-sm"
-            value={draft.url}
-            onChange={(event) => onChange({ ...draft, url: event.target.value })}
-            placeholder="{{baseUrl}}/users"
-            aria-label="Request URL"
-          />
+          <div className="min-w-0 flex-1">
+            <TokenizedField
+              className="min-h-[2.75rem] py-2.5 leading-6"
+              value={draft.url}
+              onChange={(value) => onChange({ ...draft, url: value })}
+              placeholder="{{baseUrl}}/users"
+              aria-label="Request URL"
+              variableLookup={variableLookup}
+            />
+          </div>
           <button
             className="inline-flex h-11 items-center gap-2 rounded bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
             onClick={onSend}
@@ -553,95 +1389,230 @@ function RequestEditor({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        <div className="grid gap-4">
-          <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
-            {REQUEST_TABS.map((tab) => {
-              const label =
-                tab === "auth" ? "Auth" : tab === "headers" ? "Headers" : tab === "query" ? "Query Params" : "Body";
-              const active = activeTab === tab;
+      <div className="flex min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-auto p-4">
+          <div className="grid gap-4">
+            {activeTab ? (
+              <>
+                {activeTab === "auth" ? (
+                  <EditorSection title="Auth">
+                    <AuthEditor
+                      auth={draft.auth}
+                      variableLookup={variableLookup}
+                      onChange={(auth) => onChange({ ...draft, auth })}
+                    />
+                  </EditorSection>
+                ) : null}
 
-              return (
-                <button
-                  key={tab}
-                  className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                    active
-                      ? "border-teal-600 bg-teal-600 text-white"
-                      : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
-                  }`}
-                  onClick={() => setActiveTab(tab)}
-                  type="button"
-                >
-                  {label}
-                </button>
-              );
-            })}
+                {activeTab === "headers" ? (
+                  <EditorSection title="Headers">
+                    <KeyValueTable
+                      rows={draft.headers}
+                      variableLookup={variableLookup}
+                      onChange={(headers) => onChange({ ...draft, headers })}
+                      addLabel="Add header"
+                    />
+                  </EditorSection>
+                ) : null}
+
+                {activeTab === "query" ? (
+                  <EditorSection title="Query Params">
+                    <KeyValueTable
+                      rows={draft.queryParams}
+                      variableLookup={variableLookup}
+                      onChange={(queryParams) => onChange({ ...draft, queryParams })}
+                      addLabel="Add param"
+                    />
+                  </EditorSection>
+                ) : null}
+
+                {activeTab === "body" ? (
+                  <EditorSection title="Body">
+                    <div className="mb-3">
+                      <select
+                        className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+                        value={draft.bodyMode}
+                        onChange={(event) =>
+                          onChange({
+                            ...draft,
+                            bodyMode: event.target.value as BodyMode
+                          })
+                        }
+                      >
+                        <option value="none">none</option>
+                        <option value="raw_json">raw JSON</option>
+                        <option value="raw_text">raw text</option>
+                      </select>
+                    </div>
+                    <TokenizedField
+                      className="resize-y"
+                      value={draft.bodyRaw}
+                      disabled={draft.bodyMode === "none"}
+                      onChange={(value) => onChange({ ...draft, bodyRaw: value })}
+                      placeholder={draft.bodyMode === "raw_json" ? '{\n  "name": "PostRE"\n}' : ""}
+                      aria-label="Request body"
+                      variableLookup={variableLookup}
+                      multiline
+                    />
+                  </EditorSection>
+                ) : null}
+
+                {activeTab === "scripts" ? (
+                  <EditorSection title="Scripts">
+                    <div className="grid gap-3">
+                      <div className="inline-flex w-fit rounded border border-slate-200 bg-slate-50 p-1">
+                        {SCRIPT_TABS.map((tab) => {
+                          const active = activeScriptTab === tab;
+
+                          return (
+                            <button
+                              key={tab}
+                              className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
+                                active
+                                  ? "bg-white text-teal-700 shadow-sm"
+                                  : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
+                              }`}
+                              onClick={() => setActiveScriptTab(tab)}
+                              type="button"
+                            >
+                              {tab === "pre-request" ? "Pre-request" : "Post-request"}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {activeScriptTab === "pre-request" ? (
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold uppercase text-slate-500">Pre-request</span>
+                          <textarea
+                            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
+                            value={draft.preRequestScript}
+                            onChange={(event) =>
+                              onChange({
+                                ...draft,
+                                preRequestScript: event.target.value
+                              })
+                            }
+                            spellCheck={false}
+                            aria-label="Pre-request script"
+                          />
+                        </label>
+                      ) : (
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold uppercase text-slate-500">Post-request</span>
+                          <textarea
+                            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
+                            value={draft.postRequestScript}
+                            onChange={(event) =>
+                              onChange({
+                                ...draft,
+                                postRequestScript: event.target.value
+                              })
+                            }
+                            spellCheck={false}
+                            aria-label="Post-request script"
+                          />
+                        </label>
+                      )}
+                    </div>
+                  </EditorSection>
+                ) : null}
+              </>
+            ) : null}
           </div>
-
-          {activeTab === "auth" ? (
-            <EditorSection title="Auth">
-              <AuthEditor auth={draft.auth} onChange={(auth) => onChange({ ...draft, auth })} />
-            </EditorSection>
-          ) : null}
-
-          {activeTab === "headers" ? (
-            <EditorSection title="Headers">
-              <KeyValueTable
-                rows={draft.headers}
-                onChange={(headers) => onChange({ ...draft, headers })}
-                addLabel="Add header"
-              />
-            </EditorSection>
-          ) : null}
-
-          {activeTab === "query" ? (
-            <EditorSection title="Query Params">
-              <KeyValueTable
-                rows={draft.queryParams}
-                onChange={(queryParams) => onChange({ ...draft, queryParams })}
-                addLabel="Add param"
-              />
-            </EditorSection>
-          ) : null}
-
-          {activeTab === "body" ? (
-            <EditorSection title="Body">
-              <div className="mb-3">
-                <select
-                  className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
-                  value={draft.bodyMode}
-                  onChange={(event) =>
-                    onChange({
-                      ...draft,
-                      bodyMode: event.target.value as BodyMode
-                    })
-                  }
-                >
-                  <option value="none">none</option>
-                  <option value="raw_json">raw JSON</option>
-                  <option value="raw_text">raw text</option>
-                </select>
-              </div>
-              <textarea
-                className="min-h-64 w-full resize-y rounded border border-slate-300 bg-white p-3 font-mono text-sm"
-                value={draft.bodyRaw}
-                disabled={draft.bodyMode === "none"}
-                onChange={(event) => onChange({ ...draft, bodyRaw: event.target.value })}
-                placeholder={draft.bodyMode === "raw_json" ? '{\n  "name": "PostRE"\n}' : ""}
-              />
-            </EditorSection>
-          ) : null}
         </div>
+        {showCodePanel ? (
+          <CurlCodePanel
+            generatedCurl={generatedCurl}
+            curlNotice={curlNotice}
+            curlError={curlError}
+            onCopyCurl={() => void copyCurl()}
+            onCurlPaste={applyPastedCurl}
+            onClose={() => setShowCodePanel(false)}
+          />
+        ) : (
+          <button
+            className="flex items-center border-l border-slate-200 bg-slate-50 px-1 text-slate-400 hover:text-slate-600"
+            onClick={() => setShowCodePanel(true)}
+            title="Show code panel"
+            type="button"
+          >
+            <ChevronLeft size={16} />
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
+function CurlCodePanel({
+  generatedCurl,
+  curlNotice,
+  curlError,
+  onCopyCurl,
+  onCurlPaste,
+  onClose
+}: {
+  generatedCurl: string;
+  curlNotice: string | null;
+  curlError: string | null;
+  onCopyCurl: () => void;
+  onCurlPaste: (text: string) => void;
+  onClose: () => void;
+}) {
+  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const pastedText = event.clipboardData.getData("text");
+    if (pastedText.trim()) {
+      onCurlPaste(pastedText);
+    }
+  }
+
+  return (
+    <aside className="flex min-h-[360px] min-w-0 flex-col gap-3 border-t border-slate-200 bg-slate-50 p-4 lg:min-h-0 lg:w-[360px] lg:shrink-0 lg:border-l lg:border-t-0">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-700">Code</h2>
+          <p className="text-xs text-slate-500">cURL</p>
+        </div>
+        <div className="flex items-center gap-1">
+          <IconButton label="Copy cURL" onClick={onCopyCurl}>
+            <Copy size={16} />
+          </IconButton>
+          <IconButton label="Hide code" onClick={onClose}>
+            <ChevronRight size={16} />
+          </IconButton>
+        </div>
+      </div>
+
+      <textarea
+        className="min-h-40 w-full flex-1 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
+        value={generatedCurl}
+        onPaste={handlePaste}
+        readOnly
+        aria-label="cURL"
+      />
+
+      {curlError ? (
+        <p className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+          {curlError}
+        </p>
+      ) : null}
+      {curlNotice ? (
+        <p className="rounded border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-medium text-teal-800">
+          {curlNotice}
+        </p>
+      ) : null}
+    </aside>
+  );
+}
+
 function AuthEditor({
   auth,
+  variableLookup,
   onChange
 }: {
   auth: AuthConfig;
+  variableLookup: VariableLookup;
   onChange: (auth: AuthConfig) => void;
 }) {
   const type = auth.type;
@@ -661,44 +1632,49 @@ function AuthEditor({
       </select>
 
       {type === "bearer" ? (
-        <input
-          className="h-9 rounded border border-slate-300 px-3 font-mono text-sm"
+        <TokenizedField
           value={auth.token ?? ""}
-          onChange={(event) => onChange({ ...auth, token: event.target.value })}
+          onChange={(value) => onChange({ ...auth, token: value })}
           placeholder="{{token}}"
+          aria-label="Bearer token"
+          variableLookup={variableLookup}
         />
       ) : null}
 
       {type === "basic" ? (
         <div className="grid grid-cols-2 gap-2">
-          <input
-            className="h-9 rounded border border-slate-300 px-3 font-mono text-sm"
+          <TokenizedField
             value={auth.username ?? ""}
-            onChange={(event) => onChange({ ...auth, username: event.target.value })}
+            onChange={(value) => onChange({ ...auth, username: value })}
             placeholder="username"
+            aria-label="Basic auth username"
+            variableLookup={variableLookup}
           />
-          <input
-            className="h-9 rounded border border-slate-300 px-3 font-mono text-sm"
+          <TokenizedField
             value={auth.password ?? ""}
-            onChange={(event) => onChange({ ...auth, password: event.target.value })}
+            onChange={(value) => onChange({ ...auth, password: value })}
             placeholder="password"
+            aria-label="Basic auth password"
+            variableLookup={variableLookup}
           />
         </div>
       ) : null}
 
       {type === "apiKey" ? (
         <div className="grid grid-cols-[1fr_1fr_140px] gap-2">
-          <input
-            className="h-9 rounded border border-slate-300 px-3 font-mono text-sm"
+          <TokenizedField
             value={auth.key ?? ""}
-            onChange={(event) => onChange({ ...auth, key: event.target.value })}
+            onChange={(value) => onChange({ ...auth, key: value })}
             placeholder="X-API-Key"
+            aria-label="API key name"
+            variableLookup={variableLookup}
           />
-          <input
-            className="h-9 rounded border border-slate-300 px-3 font-mono text-sm"
+          <TokenizedField
             value={auth.value ?? ""}
-            onChange={(event) => onChange({ ...auth, value: event.target.value })}
+            onChange={(value) => onChange({ ...auth, value: value })}
             placeholder="{{apiKey}}"
+            aria-label="API key value"
+            variableLookup={variableLookup}
           />
           <select
             className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
@@ -727,10 +1703,12 @@ function AuthEditor({
 
 function KeyValueTable({
   rows,
+  variableLookup,
   onChange,
   addLabel
 }: {
   rows: KeyValueRow[];
+  variableLookup: VariableLookup;
   onChange: (rows: KeyValueRow[]) => void;
   addLabel: string;
 }) {
@@ -779,16 +1757,19 @@ function KeyValueTable({
             onChange={(event) => updateRow(index, { enabled: event.target.checked })}
             aria-label="Enabled"
           />
-          <input
-            className="h-9 rounded border border-slate-300 px-2 font-mono text-sm"
+          <TokenizedField
+            className="px-2"
             value={row.key}
-            onChange={(event) => updateRow(index, { key: event.target.value })}
+            onChange={(value) => updateRow(index, { key: value })}
+            aria-label="Row key"
+            variableLookup={variableLookup}
           />
-          <input
-            className="h-9 rounded border border-slate-300 px-2 font-mono text-sm"
-            value={row.isSecret && !showSecrets ? maskSecret(row.value) : row.value}
-            onChange={(event) => updateRow(index, { value: event.target.value })}
-            readOnly={row.isSecret && !showSecrets}
+          <SecretInput
+            value={row.value}
+            isSecret={Boolean(row.isSecret)}
+            showSecrets={showSecrets}
+            variableLookup={variableLookup}
+            onChange={(value) => updateRow(index, { value })}
           />
           <IconButton label="Remove row" onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}>
             <Trash2 size={15} />
@@ -818,7 +1799,9 @@ function CollectionTree({
   onRenameCollection,
   onDeleteCollection,
   onRenameFolder,
-  onDeleteFolder
+  onDeleteFolder,
+  onRunCollection,
+  onRunFolder
 }: {
   collection: ApiCollection;
   selectedRequestId: string | null;
@@ -830,6 +1813,8 @@ function CollectionTree({
   onDeleteCollection: (collection: ApiCollection) => void;
   onRenameFolder: (folder: ApiFolder) => void;
   onDeleteFolder: (folder: ApiFolder) => void;
+  onRunCollection: (collection: ApiCollection) => void;
+  onRunFolder: (folder: ApiFolder) => void;
 }) {
   return (
     <div className="mb-2">
@@ -841,6 +1826,9 @@ function CollectionTree({
         </button>
         <TreeAction label="Rename collection" onClick={() => onRenameCollection(collection)}>
           <Pencil size={13} />
+        </TreeAction>
+        <TreeAction label="Run collection" onClick={() => onRunCollection(collection)}>
+          <Play size={13} />
         </TreeAction>
         <TreeAction label="Delete collection" onClick={() => onDeleteCollection(collection)}>
           <Trash2 size={13} />
@@ -857,6 +1845,7 @@ function CollectionTree({
             onSelectRequest={onSelectRequest}
             onRenameFolder={onRenameFolder}
             onDeleteFolder={onDeleteFolder}
+            onRunFolder={onRunFolder}
           />
         ))}
         {collection.requests.map((request) => (
@@ -879,7 +1868,8 @@ function FolderTree({
   onSelectFolder,
   onSelectRequest,
   onRenameFolder,
-  onDeleteFolder
+  onDeleteFolder,
+  onRunFolder
 }: {
   folder: ApiFolder;
   selectedRequestId: string | null;
@@ -888,6 +1878,7 @@ function FolderTree({
   onSelectRequest: (request: ApiRequest) => void;
   onRenameFolder: (folder: ApiFolder) => void;
   onDeleteFolder: (folder: ApiFolder) => void;
+  onRunFolder: (folder: ApiFolder) => void;
 }) {
   const selected = selectedFolderId === folder.id;
 
@@ -908,6 +1899,9 @@ function FolderTree({
         <TreeAction label="Rename folder" onClick={() => onRenameFolder(folder)}>
           <Pencil size={13} />
         </TreeAction>
+        <TreeAction label="Run folder" onClick={() => onRunFolder(folder)}>
+          <Play size={13} />
+        </TreeAction>
         <TreeAction label="Delete folder" onClick={() => onDeleteFolder(folder)}>
           <Trash2 size={13} />
         </TreeAction>
@@ -923,6 +1917,7 @@ function FolderTree({
             onSelectRequest={onSelectRequest}
             onRenameFolder={onRenameFolder}
             onDeleteFolder={onDeleteFolder}
+            onRunFolder={onRunFolder}
           />
         ))}
         {folder.requests.map((request) => (
@@ -958,6 +1953,270 @@ function RequestTreeItem({
       <span className={selected ? "text-white" : "font-semibold text-teal-700"}>{request.method}</span>
       <span className="truncate">{request.name}</span>
     </button>
+  );
+}
+
+function CollectionRunnerModal({
+  data,
+  target,
+  initialReport,
+  onClose,
+  onBeforeRun,
+  onRunComplete
+}: {
+  data: AppData;
+  target: CollectionRunnerTarget;
+  initialReport: ApiCollectionRunReport | null;
+  onClose: () => void;
+  onBeforeRun: () => Promise<void>;
+  onRunComplete: (report: ApiCollectionRunReport) => Promise<void>;
+}) {
+  const [environmentId, setEnvironmentId] = useState(data.activeEnvironmentId ?? "");
+  const [iterations, setIterations] = useState(1);
+  const [delayMs, setDelayMs] = useState(0);
+  const [stopOnError, setStopOnError] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [report, setReport] = useState<ApiCollectionRunReport | null>(initialReport);
+  const [requestRows, setRequestRows] = useState(() =>
+    flattenRequestsForRunner(data.collections, target).map((request) => ({
+      ...request,
+      selected: true
+    }))
+  );
+
+  const selectedCount = requestRows.filter((request) => request.selected).length;
+
+  function moveRequest(index: number, direction: -1 | 1) {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= requestRows.length) {
+      return;
+    }
+
+    const nextRows = [...requestRows];
+    const [item] = nextRows.splice(index, 1);
+    nextRows.splice(nextIndex, 0, item);
+    setRequestRows(nextRows);
+  }
+
+  async function runCollection() {
+    setBusy(true);
+    setError(null);
+    setReport(null);
+
+    try {
+      await onBeforeRun();
+      const nextReport = await api<ApiCollectionRunReport>("/api/collection-runs", {
+        method: "POST",
+        body: JSON.stringify({
+          target: {
+            type: target.type,
+            id: target.id
+          },
+          activeEnvironmentId: environmentId || null,
+          iterations,
+          delayMs,
+          stopOnError,
+          requestIds: requestRows.filter((request) => request.selected).map((request) => request.id)
+        })
+      });
+      setReport(nextReport);
+      await onRunComplete(nextReport);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Run failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`Run ${target.type}: ${target.name}`} onClose={onClose}>
+      <div className="grid max-h-[78vh] min-h-[560px] grid-cols-[340px_minmax(520px,1fr)] gap-4 overflow-hidden">
+        <aside className="min-h-0 overflow-auto rounded border border-slate-200 bg-slate-50 p-3">
+          <div className="grid gap-3">
+            <label className="grid gap-1 text-sm">
+              <span className="font-semibold text-slate-700">Environment</span>
+              <select
+                className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+                value={environmentId}
+                onChange={(event) => setEnvironmentId(event.target.value)}
+              >
+                <option value="">No environment</option>
+                {data.environments.map((environment) => (
+                  <option key={environment.id} value={environment.id}>
+                    {environment.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="grid gap-1 text-sm">
+                <span className="font-semibold text-slate-700">Iterations</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+                  value={iterations}
+                  onChange={(event) => setIterations(clamp(Number(event.target.value) || 1, 1, 100))}
+                />
+              </label>
+              <label className="grid gap-1 text-sm">
+                <span className="font-semibold text-slate-700">Delay (ms)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={60000}
+                  className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+                  value={delayMs}
+                  onChange={(event) => setDelayMs(clamp(Number(event.target.value) || 0, 0, 60000))}
+                />
+              </label>
+            </div>
+
+            <label className="flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={stopOnError}
+                onChange={(event) => setStopOnError(event.target.checked)}
+              />
+              <span>Stop on runtime error</span>
+            </label>
+
+            <div className="rounded border border-slate-200 bg-white">
+              <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
+                <span className="text-sm font-semibold text-slate-700">Requests</span>
+                <span className="text-xs text-slate-500">{selectedCount} selected</span>
+              </div>
+              <div className="max-h-[420px] overflow-auto p-2">
+                {requestRows.map((request, index) => (
+                  <div key={request.id} className="mb-2 rounded border border-slate-200 bg-slate-50 p-2 last:mb-0">
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={request.selected}
+                        onChange={(event) =>
+                          setRequestRows((rows) =>
+                            rows.map((row) =>
+                              row.id === request.id ? { ...row, selected: event.target.checked } : row
+                            )
+                          )
+                        }
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-teal-700">{request.method}</span>
+                          <span className="truncate text-sm font-medium text-slate-800">{request.name}</span>
+                        </div>
+                        <div className="truncate text-xs text-slate-500">
+                          {request.path.length ? request.path.join(" / ") : "Root"}
+                        </div>
+                      </div>
+                      <div className="grid gap-1">
+                        <button
+                          type="button"
+                          className="rounded border border-slate-200 bg-white p-1 text-slate-600 hover:bg-slate-100"
+                          onClick={() => moveRequest(index, -1)}
+                          aria-label="Move request up"
+                        >
+                          <ChevronUp size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-slate-200 bg-white p-1 text-slate-600 hover:bg-slate-100"
+                          onClick={() => moveRequest(index, 1)}
+                          aria-label="Move request down"
+                        >
+                          <ChevronDown size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <button
+              className="inline-flex h-10 items-center justify-center gap-2 rounded bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
+              onClick={() => void runCollection()}
+              disabled={busy || selectedCount === 0}
+            >
+              {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
+              Run now
+            </button>
+            {error ? <div className="rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div> : null}
+          </div>
+        </aside>
+
+        <div className="min-h-0 overflow-auto pr-1">
+          {report ? <CollectionRunReportView report={report} /> : <p className="text-sm text-slate-500">Configure the run and execute it to see the full summary, script logs, and per-request details here.</p>}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function CollectionRunReportView({ report }: { report: ApiCollectionRunReport }) {
+  return (
+    <div className="grid gap-4">
+      <EditorSection title="Summary">
+        <div className="mb-3 flex flex-wrap gap-2">
+          <SummaryChip label="Status" value={report.run.status} tone={report.run.errorCount ? "amber" : "teal"} />
+          <SummaryChip label="Steps" value={`${report.run.completedSteps}/${report.run.totalSteps}`} />
+          <SummaryChip label="Success" value={String(report.run.successCount)} tone="teal" />
+          <SummaryChip label="Errors" value={String(report.run.errorCount)} tone={report.run.errorCount ? "amber" : "slate"} />
+        </div>
+        <div className="grid gap-2 text-sm text-slate-600">
+          <PreviewRow label="Target" value={`${report.run.targetType}: ${report.run.targetName}`} />
+          <PreviewRow label="Iterations" value={String(report.run.iterations)} />
+          <PreviewRow label="Delay" value={`${report.run.delayMs} ms`} />
+          <PreviewRow label="Finished" value={report.run.finishedAt ?? "Running"} />
+        </div>
+      </EditorSection>
+
+      <EditorSection title="Steps">
+        <div className="grid gap-3">
+          {report.steps.map((step) => (
+            <details key={step.id} className="group rounded border border-slate-200 bg-slate-50 p-3" open={Boolean(step.error)}>
+              <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
+                <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
+                <span>{step.sequence}. {step.requestName}</span>
+                <span className="rounded-full bg-white px-2 py-0.5 text-xs text-teal-700">{step.method}</span>
+                <span className={`rounded-full px-2 py-0.5 text-xs ${step.error ? "bg-rose-100 text-rose-700" : "bg-teal-100 text-teal-700"}`}>
+                  {step.error ? "error" : step.status ?? "ok"}
+                </span>
+                <span className="ml-auto text-xs text-slate-500">iteration {step.iteration}</span>
+              </summary>
+              <div className="mt-3 grid gap-3">
+                <div className="flex flex-wrap gap-2">
+                  {step.resolvedUrl ? <SummaryChip label="URL" value={step.resolvedUrl} /> : null}
+                  {step.durationMs !== null ? <SummaryChip label="Time" value={`${step.durationMs} ms`} tone="amber" /> : null}
+                  {step.sizeBytes !== null ? <SummaryChip label="Size" value={formatSize(step.sizeBytes)} /> : null}
+                </div>
+                {step.error ? (
+                  <div className="rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{step.error}</div>
+                ) : null}
+                {step.missingVariables.length ? (
+                  <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    Missing variables: {step.missingVariables.join(", ")}
+                  </div>
+                ) : null}
+                <ScriptResultsPanel results={step.scriptResults} />
+                {step.responseBodyPreview ? (
+                  <EditorSection title="Response Preview">
+                    <pre className="max-h-60 overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+                      {formatBodyPreview(step.responseBodyPreview)}
+                    </pre>
+                  </EditorSection>
+                ) : null}
+              </div>
+            </details>
+          ))}
+        </div>
+      </EditorSection>
+    </div>
   );
 }
 
@@ -1338,17 +2597,19 @@ function ImportModal({
   );
 }
 
-function SuccessResponse({ response, body }: { response: SendResult; body: string }) {
+function SuccessResponse({ response, body }: { response: SendSuccessResponseState; body: string }) {
   return (
     <div className="grid gap-4">
-      <div className="grid grid-cols-2 gap-2 text-sm">
-        <Metric label="Status" value={`${response.status} ${response.statusText}`} tone="teal" />
-        <Metric label="Time" value={`${response.durationMs} ms`} tone="amber" />
-        <Metric label="Size" value={formatSize(response.sizeBytes)} />
-        <Metric label="Type" value={response.contentType || "unknown"} />
-      </div>
-      <EditorSection title="Headers">
-        <div className="grid gap-1 text-xs">
+      <ScriptResultsPanel results={response.scriptResults ?? []} />
+      <details className="group rounded border border-slate-200 bg-white p-3 shadow-panel">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
+          <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
+          <span>Headers</span>
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+            {response.headers.length}
+          </span>
+        </summary>
+        <div className="mt-3 grid gap-1 text-xs">
           {response.headers.map((header) => (
             <div key={`${header.key}-${header.value}`} className="grid grid-cols-[120px_1fr] gap-2">
               <span className="truncate font-semibold text-slate-600">{header.key}</span>
@@ -1356,7 +2617,7 @@ function SuccessResponse({ response, body }: { response: SendResult; body: strin
             </div>
           ))}
         </div>
-      </EditorSection>
+      </details>
       <EditorSection title="Body">
         <pre className="max-h-[560px] overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
           {body}
@@ -1375,11 +2636,19 @@ function ResponsePanel({
   body: string;
   busy: boolean;
 }) {
+  const responseSummary = response && !("error" in response) ? response : null;
+
   return (
-    <aside className="flex min-h-0 flex-col border-t border-slate-200 bg-white">
-      <div className="flex h-12 items-center justify-between border-b border-slate-200 px-4">
-        <span className="text-sm font-semibold text-slate-700">Response</span>
-        {busy ? <Loader2 className="animate-spin text-teal-600" size={18} /> : null}
+    <aside className="flex h-full min-h-0 flex-col border-t border-slate-200 bg-white">
+      <div className="flex h-12 items-center gap-3 border-b border-slate-200 px-4">
+        <span className="shrink-0 text-sm font-semibold text-slate-700">Response</span>
+        {responseSummary ? <ResponseSummary response={responseSummary} /> : null}
+        {response && "error" in response ? (
+          <span className="truncate rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700">
+            {response.error}
+          </span>
+        ) : null}
+        <div className="ml-auto shrink-0">{busy ? <Loader2 className="animate-spin text-teal-600" size={18} /> : null}</div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4">
         {response ? (
@@ -1401,10 +2670,11 @@ function ResponsePanel({
 function ErrorResponse({
   response
 }: {
-  response: Extract<SendResponseState, { error: string }>;
+  response: SendErrorResponseState;
 }) {
   return (
     <div className="grid gap-3">
+      <ScriptResultsPanel results={response.scriptResults ?? []} />
       <div className="rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
         <div className="font-semibold">{response.error}</div>
         {response.durationMs ? <div>{response.durationMs} ms</div> : null}
@@ -1421,6 +2691,63 @@ function ErrorResponse({
           </pre>
         </EditorSection>
       ) : null}
+    </div>
+  );
+}
+
+function ScriptResultsPanel({ results }: { results: ScriptExecutionResult[] }) {
+  if (results.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="grid gap-2">
+      {results.map((result, index) => (
+        <details
+          key={`${result.phase}-${result.source ?? "request"}-${index}`}
+          className={`group rounded border p-3 ${
+            result.ok ? "border-teal-200 bg-teal-50" : "border-rose-200 bg-rose-50"
+          }`}
+          open={!result.ok}
+        >
+          <summary
+            className={`flex cursor-pointer list-none items-center gap-2 text-sm font-semibold ${
+              result.ok ? "text-teal-800" : "text-rose-800"
+            }`}
+          >
+            <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
+            <span>{result.source ? `${result.source}` : result.phase}</span>
+            <span>{result.ok ? "ok" : "failed"}</span>
+          </summary>
+          <div className="mt-3 grid gap-2">
+            {result.error ? <div className="text-sm font-medium text-rose-700">{result.error}</div> : null}
+            {result.logs.length ? (
+              <pre className="max-h-48 overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+                {result.logs.join("\n")}
+              </pre>
+            ) : (
+              <div className="text-xs text-slate-500">No logs.</div>
+            )}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function ResponseSummary({
+  response
+}: {
+  response: SendResult;
+}) {
+  return (
+    <div className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap">
+      <div className="inline-flex items-center gap-2 text-xs text-slate-600">
+        <SummaryChip label="Status" value={`${response.status} ${response.statusText}`} tone="teal" />
+        <SummaryChip label="Time" value={`${response.durationMs} ms`} tone="amber" />
+        <SummaryChip label="Size" value={formatSize(response.sizeBytes)} />
+        <SummaryChip label="Type" value={response.contentType || "unknown"} />
+      </div>
     </div>
   );
 }
@@ -1534,7 +2861,7 @@ function LoadingBlock({ label }: { label: string }) {
   );
 }
 
-function Metric({
+function SummaryChip({
   label,
   value,
   tone = "slate"
@@ -1551,10 +2878,10 @@ function Metric({
         : "border-slate-200 bg-slate-50 text-slate-800";
 
   return (
-    <div className={`rounded border p-2 ${color}`}>
-      <div className="text-xs uppercase">{label}</div>
-      <div className="truncate text-sm font-semibold">{value}</div>
-    </div>
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 ${color}`}>
+      <span className="uppercase tracking-wide text-[10px] font-medium">{label}</span>
+      <span className="max-w-[14rem] truncate font-semibold">{value}</span>
+    </span>
   );
 }
 
@@ -1571,19 +2898,32 @@ function SecretInput({
   value,
   isSecret,
   showSecrets,
+  variableLookup = {},
   onChange
 }: {
   value: string;
   isSecret: boolean;
   showSecrets: boolean;
+  variableLookup?: VariableLookup;
   onChange: (value: string) => void;
 }) {
+  if (isSecret && !showSecrets) {
+    return (
+      <input
+        className="h-9 rounded border border-slate-300 px-2 font-mono text-sm"
+        value={maskSecret(value)}
+        readOnly
+      />
+    );
+  }
+
   return (
-    <input
-      className="h-9 rounded border border-slate-300 px-2 font-mono text-sm"
-      value={isSecret && !showSecrets ? maskSecret(value) : value}
-      readOnly={isSecret && !showSecrets}
-      onChange={(event) => onChange(event.target.value)}
+    <TokenizedField
+      className="px-2"
+      value={value}
+      onChange={onChange}
+      aria-label="Row value"
+      variableLookup={variableLookup}
     />
   );
 }
@@ -1634,6 +2974,32 @@ function findRequest(collections: ApiCollection[], requestId: string): ApiReques
   return null;
 }
 
+function findFolder(collections: ApiCollection[], folderId: string): ApiFolder | null {
+  for (const collection of collections) {
+    const folder = findFolderInFolders(collection.folders, folderId);
+    if (folder) {
+      return folder;
+    }
+  }
+
+  return null;
+}
+
+function findFolderInFolders(folders: ApiFolder[], folderId: string): ApiFolder | null {
+  for (const folder of folders) {
+    if (folder.id === folderId) {
+      return folder;
+    }
+
+    const nested = findFolderInFolders(folder.children, folderId);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
 function findRequestInFolders(folders: ApiFolder[], requestId: string): ApiRequest | null {
   for (const folder of folders) {
     const direct = folder.requests.find((request) => request.id === requestId);
@@ -1650,6 +3016,76 @@ function findRequestInFolders(folders: ApiFolder[], requestId: string): ApiReque
   return null;
 }
 
+function isFolderDescendant(
+  collections: ApiCollection[],
+  folderId: string | null | undefined,
+  ancestorId: string
+): boolean {
+  if (!folderId) {
+    return false;
+  }
+
+  const folder = findFolder(collections, ancestorId);
+  return folder ? hasFolderDescendant(folder, folderId) : false;
+}
+
+function hasFolderDescendant(folder: ApiFolder, folderId: string): boolean {
+  for (const child of folder.children) {
+    if (child.id === folderId || hasFolderDescendant(child, folderId)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function flattenRequestsForRunner(collections: ApiCollection[], target: CollectionRunnerTarget) {
+  const rows: Array<{ id: string; name: string; method: HttpMethod; path: string[] }> = [];
+
+  const visitFolder = (folder: ApiFolder, path: string[]) => {
+    for (const child of folder.children) {
+      visitFolder(child, [...path, child.name]);
+    }
+
+    for (const request of folder.requests) {
+      rows.push({
+        id: request.id,
+        name: request.name,
+        method: request.method,
+        path
+      });
+    }
+  };
+
+  if (target.type === "folder") {
+    const folder = findFolder(collections, target.id);
+    if (!folder) {
+      return rows;
+    }
+    visitFolder(folder, [folder.name]);
+    return rows;
+  }
+
+  const collection = collections.find((entry) => entry.id === target.id);
+  if (!collection) {
+    return rows;
+  }
+
+  for (const folder of collection.folders) {
+    visitFolder(folder, [folder.name]);
+  }
+  for (const request of collection.requests) {
+    rows.push({
+      id: request.id,
+      name: request.name,
+      method: request.method,
+      path: []
+    });
+  }
+
+  return rows;
+}
+
 function cloneDraft(request: ApiRequest): RequestDraft {
   return {
     id: request.id,
@@ -1662,6 +3098,8 @@ function cloneDraft(request: ApiRequest): RequestDraft {
     queryParams: request.queryParams.map((row) => ({ ...row })),
     bodyMode: request.bodyMode,
     bodyRaw: request.bodyRaw,
+    preRequestScript: request.preRequestScript,
+    postRequestScript: request.postRequestScript,
     auth: { ...request.auth }
   };
 }
@@ -1686,6 +3124,18 @@ function formatResponseBody(response: SendResponseState | null): string {
   const contentType = response.contentType.toLowerCase();
 
   if (contentType.includes("json") || body.trim().startsWith("{") || body.trim().startsWith("[")) {
+    try {
+      return JSON.stringify(JSON.parse(body), null, 2);
+    } catch {
+      return body;
+    }
+  }
+
+  return body;
+}
+
+function formatBodyPreview(body: string): string {
+  if (body.trim().startsWith("{") || body.trim().startsWith("[")) {
     try {
       return JSON.stringify(JSON.parse(body), null, 2);
     } catch {

@@ -14,6 +14,8 @@ export interface NormalizedPostmanCollection {
   name: string;
   variables: VariableValue[];
   items: NormalizedPostmanItem[];
+  preRequestScript: string;
+  postRequestScript: string;
   metadata: Record<string, unknown>;
   warnings: string[];
 }
@@ -23,6 +25,8 @@ export type NormalizedPostmanItem = NormalizedPostmanFolder | NormalizedPostmanR
 export interface NormalizedPostmanFolder {
   type: "folder";
   name: string;
+  preRequestScript: string;
+  postRequestScript: string;
   items: NormalizedPostmanItem[];
   metadata: Record<string, unknown>;
   raw: unknown;
@@ -43,6 +47,8 @@ export interface NormalizedPostmanRequest {
   queryParams: KeyValueRow[];
   bodyMode: BodyMode;
   bodyRaw: string;
+  preRequestScript: string;
+  postRequestScript: string;
   auth: AuthConfig;
   metadata: Record<string, unknown>;
 }
@@ -130,10 +136,7 @@ export function normalizePostmanCollection(payload: unknown): NormalizedPostmanC
   const name = stringValue(info?.name, "Imported Collection");
   const warnings: string[] = [];
   const items = asArray(root.item).map((item) => normalizeItem(item, warnings)).filter(Boolean);
-
-  if (asArray(root.event).length > 0) {
-    warnings.push("Collection events/scripts were preserved as metadata but are not executed yet.");
-  }
+  const scripts = extractPostmanScripts(asArray(root.event));
 
   const auth = asRecord(root.auth);
   if (auth) {
@@ -147,6 +150,8 @@ export function normalizePostmanCollection(payload: unknown): NormalizedPostmanC
     name,
     variables: normalizeVariables(root.variable, "COLLECTION"),
     items: items as NormalizedPostmanItem[],
+    preRequestScript: scripts.preRequestScript,
+    postRequestScript: scripts.postRequestScript,
     metadata: {
       info,
       auth: root.auth ?? null,
@@ -214,13 +219,13 @@ function normalizeItem(item: unknown, warnings: string[]): NormalizedPostmanItem
   const children = asArray(record.item);
 
   if (children.length > 0) {
-    if (asArray(record.event).length > 0) {
-      warnings.push(`Folder "${name}" has scripts preserved as metadata but not executed.`);
-    }
+    const scripts = extractPostmanScripts(asArray(record.event));
 
     return {
       type: "folder",
       name,
+      preRequestScript: scripts.preRequestScript,
+      postRequestScript: scripts.postRequestScript,
       items: children.map((child) => normalizeItem(child, warnings)).filter(Boolean) as NormalizedPostmanItem[],
       metadata: {
         auth: record.auth ?? null,
@@ -231,12 +236,14 @@ function normalizeItem(item: unknown, warnings: string[]): NormalizedPostmanItem
   }
 
   if (record.request) {
+    const itemEvents = asArray(record.event);
+
     return {
       type: "request",
       name,
-      request: normalizeRequest(record.request, warnings, name),
+      request: normalizeRequest(record.request, warnings, name, itemEvents),
       metadata: {
-        event: record.event ?? [],
+        event: itemEvents,
         protocolProfileBehavior: record.protocolProfileBehavior ?? null
       },
       raw: item
@@ -247,8 +254,15 @@ function normalizeItem(item: unknown, warnings: string[]): NormalizedPostmanItem
   return null;
 }
 
-function normalizeRequest(input: unknown, warnings: string[], itemName: string): NormalizedPostmanRequest {
+function normalizeRequest(
+  input: unknown,
+  warnings: string[],
+  itemName: string,
+  itemEvents: unknown[] = []
+): NormalizedPostmanRequest {
   if (typeof input === "string") {
+    const scripts = extractPostmanScripts(itemEvents);
+
     return {
       method: "GET",
       url: input,
@@ -256,6 +270,8 @@ function normalizeRequest(input: unknown, warnings: string[], itemName: string):
       queryParams: [],
       bodyMode: "none",
       bodyRaw: "",
+      preRequestScript: scripts.preRequestScript,
+      postRequestScript: scripts.postRequestScript,
       auth: { type: "none" },
       metadata: {}
     };
@@ -265,6 +281,8 @@ function normalizeRequest(input: unknown, warnings: string[], itemName: string):
 
   if (!request) {
     warnings.push(`Request "${itemName}" had an invalid request shape and was imported as a blank GET.`);
+    const scripts = extractPostmanScripts(itemEvents);
+
     return {
       method: "GET",
       url: "",
@@ -272,6 +290,8 @@ function normalizeRequest(input: unknown, warnings: string[], itemName: string):
       queryParams: [],
       bodyMode: "none",
       bodyRaw: "",
+      preRequestScript: scripts.preRequestScript,
+      postRequestScript: scripts.postRequestScript,
       auth: { type: "none" },
       metadata: { rawRequest: input }
     };
@@ -281,13 +301,11 @@ function normalizeRequest(input: unknown, warnings: string[], itemName: string):
   const urlInfo = normalizeUrl(request.url);
   const body = normalizeBody(request.body, warnings, itemName);
   const auth = normalizeAuth(request.auth);
+  const requestEvents = asArray(request.event);
+  const scripts = extractPostmanScripts([...itemEvents, ...requestEvents]);
 
   if (auth.type === "unsupported") {
     warnings.push(`Request "${itemName}" uses unsupported auth "${auth.label ?? "unknown"}"; it was preserved.`);
-  }
-
-  if (asArray(request.event).length > 0) {
-    warnings.push(`Request "${itemName}" has scripts preserved as metadata but not executed.`);
   }
 
   return {
@@ -297,13 +315,16 @@ function normalizeRequest(input: unknown, warnings: string[], itemName: string):
     queryParams: urlInfo.queryParams,
     bodyMode: body.bodyMode,
     bodyRaw: body.bodyRaw,
+    preRequestScript: scripts.preRequestScript,
+    postRequestScript: scripts.postRequestScript,
     auth,
     metadata: {
       description: request.description ?? null,
       certificate: request.certificate ?? null,
       proxy: request.proxy ?? null,
       rawBody: request.body ?? null,
-      url: request.url ?? null
+      url: request.url ?? null,
+      event: requestEvents
     }
   };
 }
@@ -525,6 +546,52 @@ function normalizeVariables(value: unknown, scope: VariableValue["scope"]): Vari
       };
     })
     .filter(Boolean) as VariableValue[];
+}
+
+export function extractPostmanScripts(events: unknown[]): {
+  preRequestScript: string;
+  postRequestScript: string;
+} {
+  const preRequestScripts: string[] = [];
+  const postRequestScripts: string[] = [];
+
+  for (const event of events) {
+    const record = asRecord(event);
+    if (!record) {
+      continue;
+    }
+
+    const listen = stringValue(record.listen).toLowerCase();
+    const script = readPostmanScript(record.script);
+    if (!script) {
+      continue;
+    }
+
+    if (listen === "prerequest") {
+      preRequestScripts.push(script);
+    } else if (listen === "test") {
+      postRequestScripts.push(script);
+    }
+  }
+
+  return {
+    preRequestScript: preRequestScripts.join("\n\n"),
+    postRequestScript: postRequestScripts.join("\n\n")
+  };
+}
+
+function readPostmanScript(value: unknown): string {
+  const script = asRecord(value);
+  if (!script) {
+    return "";
+  }
+
+  const exec = script.exec;
+  if (Array.isArray(exec)) {
+    return exec.map((line) => stringValue(line)).join("\n").trim();
+  }
+
+  return stringValue(exec).trim();
 }
 
 function joinPostmanPath(value: unknown, delimiter: string): string {

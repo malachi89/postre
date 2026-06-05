@@ -30,6 +30,8 @@ async function importCollection(payload: unknown) {
   const collection = await prisma.collection.create({
     data: {
       name: normalized.name,
+      preRequestScript: normalized.preRequestScript,
+      postRequestScript: normalized.postRequestScript,
       rawPostmanJson: stringifyJson(payload),
       metadataJson: stringifyJson(normalized.metadata),
       variables: {
@@ -107,6 +109,8 @@ async function createImportedItem(
         parentId,
         name: item.name,
         sortOrder,
+        preRequestScript: item.preRequestScript,
+        postRequestScript: item.postRequestScript,
         metadataJson: stringifyJson(item.metadata)
       }
     });
@@ -130,6 +134,8 @@ async function createImportedItem(
         queryParams: item.request.queryParams,
         bodyMode: item.request.bodyMode,
         bodyRaw: item.request.bodyRaw,
+        preRequestScript: item.request.preRequestScript,
+        postRequestScript: item.request.postRequestScript,
         auth: item.request.auth
       }),
       collectionId,

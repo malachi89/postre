@@ -11,12 +11,15 @@ model Collection {
   id              String    @id @default(cuid())
   name            String
   description     String?
+  preRequestScript String   @default("")
+  postRequestScript String  @default("")
   rawPostmanJson  String?
   metadataJson    String    @default("{}")
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   folders         Folder[]
   requests        Request[]
+  runs            CollectionRun[]
   variables       Variable[]
 
   @@index([createdAt])
@@ -28,6 +31,8 @@ model Folder {
   collectionId  String
   parentId      String?
   sortOrder     Int       @default(0)
+  preRequestScript String @default("")
+  postRequestScript String @default("")
   metadataJson  String    @default("{}")
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -49,6 +54,8 @@ model Request {
   queryParamsJson String      @default("[]")
   bodyMode        String      @default("none")
   bodyRaw         String?
+  preRequestScript String     @default("")
+  postRequestScript String    @default("")
   authJson        String      @default("{\"type\":\"none\"}")
   metadataJson    String      @default("{}")
   collectionId    String
@@ -60,6 +67,7 @@ model Request {
   folder          Folder?     @relation(fields: [folderId], references: [id], onDelete: SetNull)
   variables       Variable[]
   history         HistoryEntry[]
+  runSteps        CollectionRunStep[]
 
   @@index([collectionId])
   @@index([folderId])
@@ -73,6 +81,7 @@ model Environment {
   metadataJson    String     @default("{}")
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
+  runs            CollectionRun[]
   variables       Variable[]
 
   @@index([active])
@@ -131,4 +140,58 @@ model ImportRecord {
   createdAt      DateTime @default(now())
 
   @@index([createdAt])
+}
+
+model CollectionRun {
+  id             String              @id @default(cuid())
+  collectionId   String
+  targetType     String
+  targetId       String
+  targetName     String
+  environmentId  String?
+  iterations     Int                 @default(1)
+  delayMs        Int                 @default(0)
+  stopOnError    Boolean             @default(true)
+  status         String              @default("running")
+  requestOrderJson String            @default("[]")
+  totalSteps     Int                 @default(0)
+  completedSteps Int                 @default(0)
+  successCount   Int                 @default(0)
+  errorCount     Int                 @default(0)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  finishedAt     DateTime?
+  collection     Collection          @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  environment    Environment?        @relation(fields: [environmentId], references: [id], onDelete: SetNull)
+  steps          CollectionRunStep[]
+
+  @@index([collectionId, createdAt])
+  @@index([status, createdAt])
+}
+
+model CollectionRunStep {
+  id                    String         @id @default(cuid())
+  runId                  String
+  requestId              String?
+  iteration              Int
+  sequence               Int
+  requestName            String
+  method                 String
+  resolvedUrl            String?
+  status                 Int?
+  statusText             String?
+  durationMs             Int?
+  sizeBytes              Int?
+  responseHeadersJson    String         @default("[]")
+  responseBodyPreview    String?
+  responseBodyTruncated  Boolean        @default(false)
+  error                  String?
+  missingVariablesJson   String         @default("[]")
+  scriptResultsJson      String         @default("[]")
+  createdAt              DateTime       @default(now())
+  request                Request?       @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  run                    CollectionRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, sequence])
+  @@index([requestId])
 }
