@@ -13,8 +13,8 @@ const collection = {
       name: "Parent",
       collectionId: "col-1",
       parentId: null,
-      preRequestScript: "",
-      postRequestScript: "",
+      preRequestScript: "pm.collectionVariables.set('fromParent', 'yes')",
+      postRequestScript: "pm.collectionVariables.set('afterParent', 'yes')",
       metadataJson: "{}",
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       sortOrder: 0
@@ -24,7 +24,7 @@ const collection = {
       name: "Child",
       collectionId: "col-1",
       parentId: "folder-parent",
-      preRequestScript: "",
+      preRequestScript: "pm.collectionVariables.set('fromChild', 'yes')",
       postRequestScript: "",
       metadataJson: "{}",
       createdAt: new Date("2026-01-01T00:01:00.000Z"),
@@ -44,7 +44,7 @@ const collection = {
       bodyMode: "none",
       bodyRaw: "",
       preRequestScript: "",
-      postRequestScript: "",
+      postRequestScript: "pm.collectionVariables.set('afterRoot', 'yes')",
       authJson: "{\"type\":\"none\"}",
       createdAt: new Date("2026-01-01T00:03:00.000Z")
     },
@@ -59,7 +59,7 @@ const collection = {
       queryParamsJson: "[]",
       bodyMode: "none",
       bodyRaw: "",
-      preRequestScript: "",
+      preRequestScript: "   ",
       postRequestScript: "",
       authJson: "{\"type\":\"none\"}",
       createdAt: new Date("2026-01-01T00:04:00.000Z")
@@ -75,7 +75,7 @@ const collection = {
       queryParamsJson: "[]",
       bodyMode: "none",
       bodyRaw: "",
-      preRequestScript: "",
+      preRequestScript: "pm.collectionVariables.set('fromRequest', 'yes')",
       postRequestScript: "",
       authJson: "{\"type\":\"none\"}",
       createdAt: new Date("2026-01-01T00:02:00.000Z")
@@ -91,15 +91,41 @@ describe("collection run helpers", () => {
     expect(requests[0].path).toEqual(["Parent", "Child"]);
   });
 
-  it("keeps natural order for collections and builds hierarchical script stacks", () => {
+  it("keeps natural order for collections and selects the nearest script per phase", () => {
     const requests = flattenRunRequests(collection, { type: "collection", id: "col-1" });
 
     expect(requests.map((request) => request.id)).toEqual(["req-child", "req-parent", "req-root"]);
     expect(requests[0].preScripts.map((script) => script.source)).toEqual([
-      "Collection pre-request",
-      "Folder pre-request: Parent",
-      "Folder pre-request: Child",
       "Request pre-request: Child Request"
+    ]);
+    expect(requests[0].postScripts.map((script) => script.source)).toEqual([
+      "Folder post-request: Parent"
+    ]);
+    expect(requests[1].preScripts.map((script) => script.source)).toEqual([
+      "Folder pre-request: Parent"
+    ]);
+    expect(requests[1].postScripts.map((script) => script.source)).toEqual([
+      "Folder post-request: Parent"
+    ]);
+    expect(requests[2].preScripts.map((script) => script.source)).toEqual([
+      "Collection pre-request"
+    ]);
+    expect(requests[2].postScripts.map((script) => script.source)).toEqual([
+      "Request post-request: Root"
+    ]);
+  });
+
+  it("lets the closest nested folder override parent and collection scripts", () => {
+    const childInheritedCollection = {
+      ...collection,
+      requests: collection.requests.map((request) =>
+        request.id === "req-child" ? { ...request, preRequestScript: "" } : request
+      )
+    };
+    const requests = flattenRunRequests(childInheritedCollection, { type: "collection", id: "col-1" });
+
+    expect(requests[0].preScripts.map((script) => script.source)).toEqual([
+      "Folder pre-request: Child"
     ]);
   });
 

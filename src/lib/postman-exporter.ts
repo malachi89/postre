@@ -25,7 +25,8 @@ function collectionToPostman(collection: ApiCollection): unknown {
       schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
     },
     item: items,
-    variable: collection.variables.map(variableToPostman)
+    variable: collection.variables.map(variableToPostman),
+    ...scriptEventsToPostman(collection.preRequestScript, collection.postRequestScript)
   };
 }
 
@@ -37,7 +38,8 @@ function folderToPostmanItem(folder: ApiFolder): unknown {
 
   return {
     name: folder.name,
-    item: items
+    item: items,
+    ...scriptEventsToPostman(folder.preRequestScript, folder.postRequestScript)
   };
 }
 
@@ -51,6 +53,31 @@ function requestToPostmanItem(request: ApiRequest): unknown {
       body: bodyToPostman(request.bodyMode, request.bodyRaw),
       auth: authToPostman(request.auth),
       description: ""
+    },
+    ...scriptEventsToPostman(request.preRequestScript, request.postRequestScript)
+  };
+}
+
+function scriptEventsToPostman(preRequestScript: string, postRequestScript: string): { event?: unknown[] } {
+  const event = [
+    scriptEventToPostman("prerequest", preRequestScript),
+    scriptEventToPostman("test", postRequestScript)
+  ].filter(Boolean);
+
+  return event.length > 0 ? { event } : {};
+}
+
+function scriptEventToPostman(listen: "prerequest" | "test", script: string): unknown | null {
+  const trimmed = script.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return {
+    listen,
+    script: {
+      type: "text/javascript",
+      exec: trimmed.split(/\r?\n/)
     }
   };
 }

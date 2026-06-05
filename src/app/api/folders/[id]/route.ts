@@ -8,12 +8,22 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
-  const body = (await request.json()) as { name?: string };
+  const body = (await request.json()) as {
+    name?: string;
+    preRequestScript?: string | null;
+    postRequestScript?: string | null;
+  };
 
   const folder = await prisma.folder.update({
     where: { id },
     data: {
-      name: body.name?.trim() || undefined
+      name: body.name?.trim() || undefined,
+      preRequestScript: Object.prototype.hasOwnProperty.call(body, "preRequestScript")
+        ? body.preRequestScript ?? ""
+        : undefined,
+      postRequestScript: Object.prototype.hasOwnProperty.call(body, "postRequestScript")
+        ? body.postRequestScript ?? ""
+        : undefined
     }
   });
 

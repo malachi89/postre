@@ -1336,6 +1336,24 @@ export function PostreApp() {
     });
   }
 
+  async function saveCollectionScripts(collectionId: string, preRequestScript: string, postRequestScript: string) {
+    await api(`/api/collections/${collectionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ preRequestScript, postRequestScript })
+    });
+    setNotice("Collection scripts saved.");
+    await refresh();
+  }
+
+  async function saveFolderScripts(folderId: string, preRequestScript: string, postRequestScript: string) {
+    await api(`/api/folders/${folderId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ preRequestScript, postRequestScript })
+    });
+    setNotice("Folder scripts saved.");
+    await refresh();
+  }
+
   async function renameRequest(requestId: string, newName: string) {
     const req = data && findRequest(data.collections, requestId);
     if (!req) {
@@ -1671,6 +1689,17 @@ export function PostreApp() {
   }
 
   const responseBody = useMemo(() => formatResponseBody(response), [response]);
+  const selectedSidebarCollection = useMemo(
+    () =>
+      selectedCollectionId && data
+        ? data.collections.find((collection) => collection.id === selectedCollectionId) ?? null
+        : null,
+    [data, selectedCollectionId]
+  );
+  const selectedSidebarFolder = useMemo(
+    () => (selectedFolderId && data ? findFolder(data.collections, selectedFolderId) : null),
+    [data, selectedFolderId]
+  );
   const selectedCollection = useMemo(
     () =>
       draft?.collectionId && data
@@ -1855,12 +1884,14 @@ export function PostreApp() {
                           folderExpanded={expandedFolders}
                           onSelectCollection={() => {
                             focusRequestView();
+                            setActiveRequestTabId(null);
                             setSelectedCollectionId(collection.id);
                             setSelectedFolderId(null);
                             setCollectionExpanded(collection.id, true);
                           }}
                           onSelectFolder={(folder) => {
                             focusRequestView();
+                            setActiveRequestTabId(null);
                             setSelectedCollectionId(folder.collectionId);
                             setSelectedFolderId(folder.id);
                             setCollectionExpanded(folder.collectionId, true);
@@ -2070,6 +2101,28 @@ export function PostreApp() {
                   <ResponsePanel response={response} body={responseBody} busy={busy} />
                 </div>
               </div>
+            ) : selectedSidebarFolder ? (
+              <ScriptScopeEditor
+                key={`folder-${selectedSidebarFolder.id}`}
+                title={selectedSidebarFolder.name}
+                scopeLabel="Folder"
+                preRequestScript={selectedSidebarFolder.preRequestScript}
+                postRequestScript={selectedSidebarFolder.postRequestScript}
+                onSave={(preRequestScript, postRequestScript) =>
+                  saveFolderScripts(selectedSidebarFolder.id, preRequestScript, postRequestScript)
+                }
+              />
+            ) : selectedSidebarCollection ? (
+              <ScriptScopeEditor
+                key={`collection-${selectedSidebarCollection.id}`}
+                title={selectedSidebarCollection.name}
+                scopeLabel="Collection"
+                preRequestScript={selectedSidebarCollection.preRequestScript}
+                postRequestScript={selectedSidebarCollection.postRequestScript}
+                onSave={(preRequestScript, postRequestScript) =>
+                  saveCollectionScripts(selectedSidebarCollection.id, preRequestScript, postRequestScript)
+                }
+              />
             ) : (
               <div className="flex flex-1 items-center justify-center">
                 <EmptyState title="Select or create a request" actionLabel="New request" onAction={createRequest} />
@@ -2492,6 +2545,138 @@ function ContextMenuSeparator() {
   return <div className="my-1 border-t border-slate-100" />;
 }
 
+function ScriptScopeEditor({
+  title,
+  scopeLabel,
+  preRequestScript,
+  postRequestScript,
+  onSave
+}: {
+  title: string;
+  scopeLabel: "Collection" | "Folder";
+  preRequestScript: string;
+  postRequestScript: string;
+  onSave: (preRequestScript: string, postRequestScript: string) => Promise<void>;
+}) {
+  const [activeScriptTab, setActiveScriptTab] = useState<ScriptTab>("pre-request");
+  const [preScript, setPreScript] = useState(preRequestScript);
+  const [postScript, setPostScript] = useState(postRequestScript);
+  const [saving, setSaving] = useState(false);
+  const dirty = preScript !== preRequestScript || postScript !== postRequestScript;
+
+  useEffect(() => {
+    setPreScript(preRequestScript);
+    setPostScript(postRequestScript);
+    setActiveScriptTab(preRequestScript.trim() || !postRequestScript.trim() ? "pre-request" : "post-request");
+  }, [preRequestScript, postRequestScript]);
+
+  async function saveScripts() {
+    setSaving(true);
+    try {
+      await onSave(preScript, postScript);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">
+      <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 px-4">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase text-slate-500">{scopeLabel}</div>
+          <h2 className="truncate text-sm font-semibold text-slate-800">{title}</h2>
+        </div>
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => void saveScripts()}
+          disabled={saving || !dirty}
+          type="button"
+        >
+          {saving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+          Save
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        <EditorSection title="Scripts">
+          <ScriptTextEditor
+            activeScriptTab={activeScriptTab}
+            preRequestScript={preScript}
+            postRequestScript={postScript}
+            onTabChange={setActiveScriptTab}
+            onPreRequestScriptChange={setPreScript}
+            onPostRequestScriptChange={setPostScript}
+          />
+        </EditorSection>
+      </div>
+    </div>
+  );
+}
+
+function ScriptTextEditor({
+  activeScriptTab,
+  preRequestScript,
+  postRequestScript,
+  onTabChange,
+  onPreRequestScriptChange,
+  onPostRequestScriptChange
+}: {
+  activeScriptTab: ScriptTab;
+  preRequestScript: string;
+  postRequestScript: string;
+  onTabChange: (tab: ScriptTab) => void;
+  onPreRequestScriptChange: (script: string) => void;
+  onPostRequestScriptChange: (script: string) => void;
+}) {
+  return (
+    <div className="grid gap-3">
+      <div className="inline-flex w-fit rounded border border-slate-200 bg-slate-50 p-1">
+        {SCRIPT_TABS.map((tab) => {
+          const active = activeScriptTab === tab;
+
+          return (
+            <button
+              key={tab}
+              className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
+                active
+                  ? "bg-white text-teal-700 shadow-sm"
+                  : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
+              }`}
+              onClick={() => onTabChange(tab)}
+              type="button"
+            >
+              {tab === "pre-request" ? "Pre-request" : "Post-request"}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeScriptTab === "pre-request" ? (
+        <label className="grid gap-2">
+          <span className="text-xs font-semibold uppercase text-slate-500">Pre-request</span>
+          <textarea
+            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
+            value={preRequestScript}
+            onChange={(event) => onPreRequestScriptChange(event.target.value)}
+            spellCheck={false}
+            aria-label="Pre-request script"
+          />
+        </label>
+      ) : (
+        <label className="grid gap-2">
+          <span className="text-xs font-semibold uppercase text-slate-500">Post-request</span>
+          <textarea
+            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
+            value={postRequestScript}
+            onChange={(event) => onPostRequestScriptChange(event.target.value)}
+            spellCheck={false}
+            aria-label="Post-request script"
+          />
+        </label>
+      )}
+    </div>
+  );
+}
+
 function RequestEditor({
   draft,
   busy,
@@ -2721,62 +2906,14 @@ function RequestEditor({
 
                 {activeTab === "scripts" ? (
                   <EditorSection title="Scripts">
-                    <div className="grid gap-3">
-                      <div className="inline-flex w-fit rounded border border-slate-200 bg-slate-50 p-1">
-                        {SCRIPT_TABS.map((tab) => {
-                          const active = activeScriptTab === tab;
-
-                          return (
-                            <button
-                              key={tab}
-                              className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
-                                active
-                                  ? "bg-white text-teal-700 shadow-sm"
-                                  : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
-                              }`}
-                              onClick={() => setActiveScriptTab(tab)}
-                              type="button"
-                            >
-                              {tab === "pre-request" ? "Pre-request" : "Post-request"}
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      {activeScriptTab === "pre-request" ? (
-                        <label className="grid gap-2">
-                          <span className="text-xs font-semibold uppercase text-slate-500">Pre-request</span>
-                          <textarea
-                            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
-                            value={draft.preRequestScript}
-                            onChange={(event) =>
-                              onChange({
-                                ...draft,
-                                preRequestScript: event.target.value
-                              })
-                            }
-                            spellCheck={false}
-                            aria-label="Pre-request script"
-                          />
-                        </label>
-                      ) : (
-                        <label className="grid gap-2">
-                          <span className="text-xs font-semibold uppercase text-slate-500">Post-request</span>
-                          <textarea
-                            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
-                            value={draft.postRequestScript}
-                            onChange={(event) =>
-                              onChange({
-                                ...draft,
-                                postRequestScript: event.target.value
-                              })
-                            }
-                            spellCheck={false}
-                            aria-label="Post-request script"
-                          />
-                        </label>
-                      )}
-                    </div>
+                    <ScriptTextEditor
+                      activeScriptTab={activeScriptTab}
+                      preRequestScript={draft.preRequestScript}
+                      postRequestScript={draft.postRequestScript}
+                      onTabChange={setActiveScriptTab}
+                      onPreRequestScriptChange={(preRequestScript) => onChange({ ...draft, preRequestScript })}
+                      onPostRequestScriptChange={(postRequestScript) => onChange({ ...draft, postRequestScript })}
+                    />
                   </EditorSection>
                 ) : null}
               </>

@@ -8,6 +8,8 @@ export async function POST(request: NextRequest) {
     name?: string;
     collectionId?: string;
     parentId?: string | null;
+    preRequestScript?: string | null;
+    postRequestScript?: string | null;
   };
 
   if (!body.collectionId) {
@@ -18,7 +20,9 @@ export async function POST(request: NextRequest) {
     data: {
       name: body.name?.trim() || "New Folder",
       collectionId: body.collectionId,
-      parentId: body.parentId ?? null
+      parentId: body.parentId ?? null,
+      preRequestScript: body.preRequestScript ?? "",
+      postRequestScript: body.postRequestScript ?? ""
     }
   });
 

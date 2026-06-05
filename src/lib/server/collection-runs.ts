@@ -6,6 +6,7 @@ import {
   serializeCollectionRunSummary
 } from "@/lib/server/data";
 import { executeRequest, RESPONSE_HISTORY_LIMIT, type ScriptSource } from "@/lib/server/request-execution";
+import { resolveEffectiveScriptSources } from "@/lib/server/script-inheritance";
 import type {
   ApiCollectionRunReport,
   CollectionRunTargetType,
@@ -353,6 +354,15 @@ function toRunRequestPlan(
     ...getScriptFields(folder)
   }));
   const requestDraft = toRequestDraft(request);
+  const scripts = resolveEffectiveScriptSources({
+    collection: collectionScripts,
+    folders: folderScripts,
+    request: {
+      name: request.name,
+      preRequestScript: requestDraft.preRequestScript,
+      postRequestScript: requestDraft.postRequestScript
+    }
+  });
 
   return {
     id: request.id,
@@ -361,22 +371,8 @@ function toRunRequestPlan(
     folderId: request.folderId,
     path: ancestors.map((folder) => folder.name),
     draft: requestDraft,
-    preScripts: [
-      { script: collectionScripts.preRequestScript, source: "Collection pre-request" },
-      ...folderScripts.map((folder) => ({
-        script: folder.preRequestScript,
-        source: `Folder pre-request: ${folder.name}`
-      })),
-      { script: requestDraft.preRequestScript, source: `Request pre-request: ${request.name}` }
-    ],
-    postScripts: [
-      { script: collectionScripts.postRequestScript, source: "Collection post-request" },
-      ...folderScripts.map((folder) => ({
-        script: folder.postRequestScript,
-        source: `Folder post-request: ${folder.name}`
-      })),
-      { script: requestDraft.postRequestScript, source: `Request post-request: ${request.name}` }
-    ]
+    preScripts: scripts.preScripts,
+    postScripts: scripts.postScripts
   };
 }
 

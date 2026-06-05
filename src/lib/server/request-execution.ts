@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/db";
 import { stringifyJson } from "@/lib/json";
 import { applyScriptMutations, runRequestScript } from "@/lib/request-scripts";
-import { getVariablesForDraft, requestToPrismaInput } from "@/lib/server/data";
+import { getScriptFields, getVariablesForDraft, requestToPrismaInput } from "@/lib/server/data";
 import { executeHttpRequest } from "@/lib/http-executor";
+import { resolveEffectiveScriptSources } from "@/lib/server/script-inheritance";
 import { resolveRequestDraft } from "@/lib/variable-resolver";
 import type { RequestDraft, ScriptExecutionResult, SendResult } from "@/lib/types";
 
@@ -48,8 +49,12 @@ export async function executeRequest(input: ExecuteRequestInput): Promise<Execut
   const activeEnvironmentId = input.activeEnvironmentId ?? null;
   const draft = input.persistDraft === false ? input.draft : await saveDraftBeforeSend(input.draft);
   const scriptResults: ScriptExecutionResult[] = [];
-  const preScripts = normalizeScriptSources(input.preScripts, draft.preRequestScript);
-  const postScripts = normalizeScriptSources(input.postScripts, draft.postRequestScript);
+  const inheritedScripts =
+    input.preScripts === undefined || input.postScripts === undefined
+      ? await loadEffectiveScriptSourcesForDraft(draft)
+      : null;
+  const preScripts = normalizeScriptSources(input.preScripts, inheritedScripts?.preScripts ?? []);
+  const postScripts = normalizeScriptSources(input.postScripts, inheritedScripts?.postScripts ?? []);
 
   for (const scriptSource of preScripts) {
     const run = await runRequestScript({
@@ -238,12 +243,107 @@ async function saveHistory(originalDraft: RequestDraft, resolvedUrl: string, res
   });
 }
 
-function normalizeScriptSources(sources: ScriptSource[] | undefined, fallbackScript: string): ScriptSource[] {
-  if (sources && sources.length > 0) {
+async function loadEffectiveScriptSourcesForDraft(draft: RequestDraft): Promise<{
+  preScripts: ScriptSource[];
+  postScripts: ScriptSource[];
+}> {
+  if (!draft.id) {
+    return resolveEffectiveScriptSources({
+      collection: {},
+      folders: [],
+      request: {
+        name: draft.name || "Untitled Request",
+        preRequestScript: draft.preRequestScript,
+        postRequestScript: draft.postRequestScript
+      }
+    });
+  }
+
+  const request = await prisma.request.findUnique({
+    where: { id: draft.id },
+    select: {
+      id: true,
+      name: true,
+      collectionId: true,
+      folderId: true,
+      preRequestScript: true,
+      postRequestScript: true,
+      metadataJson: true,
+      collection: {
+        select: {
+          preRequestScript: true,
+          postRequestScript: true,
+          metadataJson: true
+        }
+      }
+    }
+  });
+
+  if (!request) {
+    return resolveEffectiveScriptSources({
+      collection: {},
+      folders: [],
+      request: {
+        name: draft.name || "Untitled Request",
+        preRequestScript: draft.preRequestScript,
+        postRequestScript: draft.postRequestScript
+      }
+    });
+  }
+
+  const folders = request.folderId
+    ? await prisma.folder.findMany({
+        where: { collectionId: request.collectionId },
+        select: {
+          id: true,
+          name: true,
+          parentId: true,
+          preRequestScript: true,
+          postRequestScript: true,
+          metadataJson: true
+        }
+      })
+    : [];
+
+  return resolveEffectiveScriptSources({
+    collection: getScriptFields(request.collection),
+    folders: getFolderLineage(folders, request.folderId).map((folder) => ({
+      name: folder.name,
+      ...getScriptFields(folder)
+    })),
+    request: {
+      name: request.name,
+      ...getScriptFields(request)
+    }
+  });
+}
+
+function getFolderLineage<T extends { id: string; parentId: string | null }>(
+  folders: T[],
+  folderId: string | null
+): T[] {
+  const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
+  const lineage: T[] = [];
+  let currentId = folderId;
+
+  while (currentId) {
+    const folder = foldersById.get(currentId);
+    if (!folder) {
+      break;
+    }
+    lineage.unshift(folder);
+    currentId = folder.parentId;
+  }
+
+  return lineage;
+}
+
+function normalizeScriptSources(sources: ScriptSource[] | undefined, fallbackSources: ScriptSource[]): ScriptSource[] {
+  if (sources !== undefined) {
     return sources;
   }
 
-  return [{ script: fallbackScript }];
+  return fallbackSources;
 }
 
 function withScriptSource(result: ScriptExecutionResult, source: string | undefined): ScriptExecutionResult {
