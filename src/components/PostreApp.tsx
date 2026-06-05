@@ -1762,11 +1762,8 @@ export function PostreApp() {
           >
             {isDarkTheme ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <IconButton
-            label={showCollectionsPanel ? "Hide collections" : "Show collections"}
-            onClick={() => setShowCollectionsPanel((current) => !current)}
-          >
-            <Folder size={17} />
+          <IconButton label="Manage cookies" onClick={openCookies}>
+            <Cookie size={17} />
           </IconButton>
           <select
             className="h-9 min-w-44 rounded border border-slate-300 bg-white px-3 text-sm"
