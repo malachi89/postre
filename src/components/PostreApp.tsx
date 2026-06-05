@@ -77,6 +77,9 @@ type ScriptTab = (typeof SCRIPT_TABS)[number];
 const RESPONSE_HANDLE_HEIGHT = 12;
 const RESPONSE_PANEL_MIN_HEIGHT = 220;
 const REQUEST_EDITOR_MIN_HEIGHT = 260;
+const COLLECTIONS_PANEL_MIN_WIDTH = 240;
+const COLLECTIONS_PANEL_MAX_WIDTH = 560;
+const COLLECTIONS_HANDLE_WIDTH = 10;
 const THEME_STORAGE_KEY = "postre-theme";
 const TOKEN_PATTERN = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
 type Theme = "light" | "dark";
@@ -538,6 +541,9 @@ export function PostreApp() {
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [expandedCollections, setExpandedCollections] = useState<Record<string, boolean>>({});
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
+  const [collectionsPanelWidth, setCollectionsPanelWidth] = useState<number | null>(300);
   const [theme, setTheme] = useState<Theme>("light");
   const [themeReady, setThemeReady] = useState(false);
   const [draft, setDraft] = useState<RequestDraft | null>(null);
@@ -547,9 +553,10 @@ export function PostreApp() {
   const [notice, setNotice] = useState<string | null>(null);
   const [showEnvironments, setShowEnvironments] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [showHistoryPanel, setShowHistoryPanel] = useState(true);
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [runnerTarget, setRunnerTarget] = useState<CollectionRunnerTarget | null>(null);
   const [runnerReport, setRunnerReport] = useState<ApiCollectionRunReport | null>(null);
+  const collectionsSplitRef = useRef<HTMLDivElement | null>(null);
   const responseSplitRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<RequestDraft | null>(draft);
   draftRef.current = draft;
@@ -598,6 +605,40 @@ export function PostreApp() {
       }
     }
   }, [selectedCollectionId, selectedRequestId]);
+
+  function setCollectionExpanded(collectionId: string, expanded: boolean) {
+    setExpandedCollections((current) => ({
+      ...current,
+      [collectionId]: expanded
+    }));
+  }
+
+  function setFolderExpanded(folderId: string, expanded: boolean) {
+    setExpandedFolders((current) => ({
+      ...current,
+      [folderId]: expanded
+    }));
+  }
+
+  function expandFolderPath(folderId: string) {
+    if (!data) {
+      return;
+    }
+
+    const path = findFolderPath(data.collections, folderId);
+    if (!path) {
+      return;
+    }
+
+    setCollectionExpanded(path.collectionId, true);
+    setExpandedFolders((current) => {
+      const next = { ...current };
+      for (const id of path.folderIds) {
+        next[id] = true;
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     void refresh();
@@ -667,6 +708,31 @@ export function PostreApp() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  useEffect(() => {
+    function handleResize() {
+      const container = collectionsSplitRef.current;
+      if (!container) {
+        return;
+      }
+
+      setCollectionsPanelWidth((current) => {
+        if (current === null) {
+          return current;
+        }
+
+        const rect = container.getBoundingClientRect();
+        const maxWidth = Math.min(
+          COLLECTIONS_PANEL_MAX_WIDTH,
+          rect.width - COLLECTIONS_PANEL_MIN_WIDTH - COLLECTIONS_HANDLE_WIDTH
+        );
+        return clamp(current, COLLECTIONS_PANEL_MIN_WIDTH, Math.max(COLLECTIONS_PANEL_MIN_WIDTH, maxWidth));
+      });
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   const activeEnvironmentId = data?.activeEnvironmentId ?? null;
   async function createCollection() {
     const name = window.prompt("Collection name", "New Collection");
@@ -682,6 +748,7 @@ export function PostreApp() {
       });
       setSelectedCollectionId(result.id);
       setSelectedFolderId(null);
+      setCollectionExpanded(result.id, true);
       setNotice("Collection created.");
       await refresh();
     } finally {
@@ -730,6 +797,10 @@ export function PostreApp() {
       body: JSON.stringify({ name, collectionId, parentId: selectedFolderId })
     });
     setSelectedFolderId(result.id);
+    setCollectionExpanded(collectionId, true);
+    if (selectedFolderId) {
+      setFolderExpanded(selectedFolderId, true);
+    }
     await refresh();
   }
 
@@ -783,6 +854,10 @@ export function PostreApp() {
 
     setSelectedRequestId(request.id);
     setDraft(cloneDraft(request));
+    setCollectionExpanded(collectionId, true);
+    if (selectedFolderId) {
+      setFolderExpanded(selectedFolderId, true);
+    }
     await refresh();
   }
 
@@ -872,6 +947,10 @@ export function PostreApp() {
     setSelectedRequestId(request.id);
     setSelectedCollectionId(request.collectionId);
     setSelectedFolderId(request.folderId ?? null);
+    setCollectionExpanded(request.collectionId, true);
+    if (request.folderId) {
+      expandFolderPath(request.folderId);
+    }
     setDraft(cloneDraft(request));
     setResponse(null);
   }
@@ -942,6 +1021,47 @@ export function PostreApp() {
     window.addEventListener("pointercancel", cleanup, { once: true });
   }
 
+  function beginCollectionsResize(event: React.PointerEvent<HTMLButtonElement>) {
+    const container = collectionsSplitRef.current;
+    if (!container) {
+      return;
+    }
+
+    event.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const minWidth = COLLECTIONS_PANEL_MIN_WIDTH;
+    const maxWidth = Math.min(
+      COLLECTIONS_PANEL_MAX_WIDTH,
+      rect.width - COLLECTIONS_PANEL_MIN_WIDTH - COLLECTIONS_HANDLE_WIDTH
+    );
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+
+    const updateWidth = (clientX: number) => {
+      const nextWidth = clamp(Math.round(clientX - rect.left), minWidth, Math.max(minWidth, maxWidth));
+      setCollectionsPanelWidth(nextWidth);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+    };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      updateWidth(moveEvent.clientX);
+    };
+
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    updateWidth(event.clientX);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", cleanup, { once: true });
+    window.addEventListener("pointercancel", cleanup, { once: true });
+  }
+
   const responseBody = useMemo(() => formatResponseBody(response), [response]);
   const selectedCollection = useMemo(
     () =>
@@ -982,7 +1102,6 @@ export function PostreApp() {
           </div>
           <div>
             <h1 className="text-base font-semibold leading-5">PostRE</h1>
-            <p className="text-xs text-slate-500">Local HTTP client</p>
           </div>
         </div>
 
@@ -1026,8 +1145,18 @@ export function PostreApp() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[300px_minmax(0,1fr)]">
-        <aside className="flex min-h-0 flex-col border-r border-slate-200 bg-white">
+      <div ref={collectionsSplitRef} className="flex min-h-0 flex-1 overflow-hidden">
+        <aside
+          className="flex min-h-0 shrink-0 flex-col border-r border-slate-200 bg-white"
+          style={{
+            width:
+              collectionsPanelWidth === null
+                ? "300px"
+                : `${collectionsPanelWidth}px`,
+            minWidth: `${COLLECTIONS_PANEL_MIN_WIDTH}px`,
+            maxWidth: `${COLLECTIONS_PANEL_MAX_WIDTH}px`
+          }}
+        >
           <div className="flex h-12 items-center justify-between border-b border-slate-200 px-3">
             <span className="text-sm font-semibold text-slate-700">Collections</span>
             <div className="flex gap-1">
@@ -1055,19 +1184,30 @@ export function PostreApp() {
                   collection={collection}
                   selectedRequestId={selectedRequestId}
                   selectedFolderId={selectedFolderId}
+                  expanded={expandedCollections[collection.id] ?? true}
+                  folderExpanded={expandedFolders}
                   onSelectCollection={() => {
                     setSelectedCollectionId(collection.id);
                     setSelectedFolderId(null);
+                    setCollectionExpanded(collection.id, true);
                   }}
                   onSelectFolder={(folder) => {
                     setSelectedCollectionId(folder.collectionId);
                     setSelectedFolderId(folder.id);
+                    setCollectionExpanded(folder.collectionId, true);
+                    expandFolderPath(folder.id);
                   }}
                   onSelectRequest={selectRequest}
                   onRenameCollection={renameCollection}
                   onDeleteCollection={deleteCollection}
                   onRenameFolder={renameFolder}
                   onDeleteFolder={deleteFolder}
+                  onToggleCollection={(collection) =>
+                    setCollectionExpanded(collection.id, !(expandedCollections[collection.id] ?? true))
+                  }
+                  onToggleFolder={(folder) =>
+                    setFolderExpanded(folder.id, !(expandedFolders[folder.id] ?? true))
+                  }
                   onRunCollection={(collection) =>
                     setRunnerTarget({ type: "collection", id: collection.id, name: collection.name })
                   }
@@ -1139,7 +1279,17 @@ export function PostreApp() {
           </div>
         </aside>
 
-        <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]">
+        <button
+          type="button"
+          className="group relative z-10 -ml-px flex w-[10px] shrink-0 cursor-col-resize items-stretch justify-center border-x border-transparent bg-slate-100 hover:bg-teal-50 active:bg-teal-100"
+          onPointerDown={beginCollectionsResize}
+          aria-label="Resize collections panel"
+          title="Drag to resize collections panel"
+        >
+          <span className="my-auto h-14 w-1 rounded-full bg-slate-300 transition group-hover:bg-teal-400" />
+        </button>
+
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]">
           {draft ? (
             <div ref={responseSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="min-h-0 flex-1 overflow-hidden">
@@ -1793,6 +1943,8 @@ function CollectionTree({
   collection,
   selectedRequestId,
   selectedFolderId,
+  expanded,
+  folderExpanded,
   onSelectCollection,
   onSelectFolder,
   onSelectRequest,
@@ -1800,12 +1952,16 @@ function CollectionTree({
   onDeleteCollection,
   onRenameFolder,
   onDeleteFolder,
+  onToggleCollection,
+  onToggleFolder,
   onRunCollection,
   onRunFolder
 }: {
   collection: ApiCollection;
   selectedRequestId: string | null;
   selectedFolderId: string | null;
+  expanded: boolean;
+  folderExpanded: Record<string, boolean>;
   onSelectCollection: () => void;
   onSelectFolder: (folder: ApiFolder) => void;
   onSelectRequest: (request: ApiRequest) => void;
@@ -1813,14 +1969,24 @@ function CollectionTree({
   onDeleteCollection: (collection: ApiCollection) => void;
   onRenameFolder: (folder: ApiFolder) => void;
   onDeleteFolder: (folder: ApiFolder) => void;
+  onToggleCollection: (collection: ApiCollection) => void;
+  onToggleFolder: (folder: ApiFolder) => void;
   onRunCollection: (collection: ApiCollection) => void;
   onRunFolder: (folder: ApiFolder) => void;
 }) {
   return (
     <div className="mb-2">
       <div className="group flex items-center gap-1 rounded px-2 py-1.5 hover:bg-slate-50">
+        <button
+          type="button"
+          className="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+          onClick={() => onToggleCollection(collection)}
+          aria-label={expanded ? `Collapse collection ${collection.name}` : `Expand collection ${collection.name}`}
+          title={expanded ? `Collapse collection ${collection.name}` : `Expand collection ${collection.name}`}
+        >
+          <ChevronRight size={14} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
+        </button>
         <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onSelectCollection}>
-          <ChevronRight size={14} className="text-slate-400" />
           <Folder size={15} className="text-amber-600" />
           <span className="truncate text-sm font-semibold">{collection.name}</span>
         </button>
@@ -1834,29 +2000,34 @@ function CollectionTree({
           <Trash2 size={13} />
         </TreeAction>
       </div>
-      <div className="ml-5 border-l border-slate-200 pl-2">
-        {collection.folders.map((folder) => (
-          <FolderTree
-            key={folder.id}
-            folder={folder}
-            selectedRequestId={selectedRequestId}
-            selectedFolderId={selectedFolderId}
-            onSelectFolder={onSelectFolder}
-            onSelectRequest={onSelectRequest}
-            onRenameFolder={onRenameFolder}
-            onDeleteFolder={onDeleteFolder}
-            onRunFolder={onRunFolder}
-          />
-        ))}
-        {collection.requests.map((request) => (
-          <RequestTreeItem
-            key={request.id}
-            request={request}
-            selected={selectedRequestId === request.id}
-            onSelect={onSelectRequest}
-          />
-        ))}
-      </div>
+      {expanded ? (
+        <div className="ml-5 border-l border-slate-200 pl-2">
+          {collection.folders.map((folder) => (
+            <FolderTree
+              key={folder.id}
+              folder={folder}
+              selectedRequestId={selectedRequestId}
+              selectedFolderId={selectedFolderId}
+              expanded={folderExpanded[folder.id] ?? true}
+              folderExpanded={folderExpanded}
+              onSelectFolder={onSelectFolder}
+              onSelectRequest={onSelectRequest}
+              onRenameFolder={onRenameFolder}
+              onDeleteFolder={onDeleteFolder}
+              onToggleFolder={onToggleFolder}
+              onRunFolder={onRunFolder}
+            />
+          ))}
+          {collection.requests.map((request) => (
+            <RequestTreeItem
+              key={request.id}
+              request={request}
+              selected={selectedRequestId === request.id}
+              onSelect={onSelectRequest}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1865,19 +2036,25 @@ function FolderTree({
   folder,
   selectedRequestId,
   selectedFolderId,
+  expanded,
+  folderExpanded,
   onSelectFolder,
   onSelectRequest,
   onRenameFolder,
   onDeleteFolder,
+  onToggleFolder,
   onRunFolder
 }: {
   folder: ApiFolder;
   selectedRequestId: string | null;
   selectedFolderId: string | null;
+  expanded: boolean;
+  folderExpanded: Record<string, boolean>;
   onSelectFolder: (folder: ApiFolder) => void;
   onSelectRequest: (request: ApiRequest) => void;
   onRenameFolder: (folder: ApiFolder) => void;
   onDeleteFolder: (folder: ApiFolder) => void;
+  onToggleFolder: (folder: ApiFolder) => void;
   onRunFolder: (folder: ApiFolder) => void;
 }) {
   const selected = selectedFolderId === folder.id;
@@ -1889,6 +2066,15 @@ function FolderTree({
           selected ? "bg-teal-50 text-teal-800" : "hover:bg-slate-50"
         }`}
       >
+        <button
+          type="button"
+          className="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+          onClick={() => onToggleFolder(folder)}
+          aria-label={expanded ? `Collapse folder ${folder.name}` : `Expand folder ${folder.name}`}
+          title={expanded ? `Collapse folder ${folder.name}` : `Expand folder ${folder.name}`}
+        >
+          <ChevronRight size={13} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
+        </button>
         <button
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
           onClick={() => onSelectFolder(folder)}
@@ -1906,29 +2092,34 @@ function FolderTree({
           <Trash2 size={13} />
         </TreeAction>
       </div>
-      <div className="ml-4 border-l border-slate-200 pl-2">
-        {folder.children.map((child) => (
-          <FolderTree
-            key={child.id}
-            folder={child}
-            selectedRequestId={selectedRequestId}
-            selectedFolderId={selectedFolderId}
-            onSelectFolder={onSelectFolder}
-            onSelectRequest={onSelectRequest}
-            onRenameFolder={onRenameFolder}
-            onDeleteFolder={onDeleteFolder}
-            onRunFolder={onRunFolder}
-          />
-        ))}
-        {folder.requests.map((request) => (
-          <RequestTreeItem
-            key={request.id}
-            request={request}
-            selected={selectedRequestId === request.id}
-            onSelect={onSelectRequest}
-          />
-        ))}
-      </div>
+      {expanded ? (
+        <div className="ml-4 border-l border-slate-200 pl-2">
+          {folder.children.map((child) => (
+            <FolderTree
+              key={child.id}
+              folder={child}
+              selectedRequestId={selectedRequestId}
+              selectedFolderId={selectedFolderId}
+              expanded={folderExpanded[child.id] ?? true}
+              folderExpanded={folderExpanded}
+              onSelectFolder={onSelectFolder}
+              onSelectRequest={onSelectRequest}
+              onRenameFolder={onRenameFolder}
+              onDeleteFolder={onDeleteFolder}
+              onToggleFolder={onToggleFolder}
+              onRunFolder={onRunFolder}
+            />
+          ))}
+          {folder.requests.map((request) => (
+            <RequestTreeItem
+              key={request.id}
+              request={request}
+              selected={selectedRequestId === request.id}
+              onSelect={onSelectRequest}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1974,7 +2165,7 @@ function CollectionRunnerModal({
   const [environmentId, setEnvironmentId] = useState(data.activeEnvironmentId ?? "");
   const [iterations, setIterations] = useState(1);
   const [delayMs, setDelayMs] = useState(0);
-  const [stopOnError, setStopOnError] = useState(true);
+  const [stopOnError, setStopOnError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ApiCollectionRunReport | null>(initialReport);
@@ -2160,7 +2351,7 @@ function CollectionRunnerModal({
 
 function CollectionRunReportView({ report }: { report: ApiCollectionRunReport }) {
   return (
-    <div className="grid gap-4">
+    <div className="flex min-h-0 flex-col gap-4">
       <EditorSection title="Summary">
         <div className="mb-3 flex flex-wrap gap-2">
           <SummaryChip label="Status" value={report.run.status} tone={report.run.errorCount ? "amber" : "teal"} />
@@ -2177,43 +2368,45 @@ function CollectionRunReportView({ report }: { report: ApiCollectionRunReport })
       </EditorSection>
 
       <EditorSection title="Steps">
-        <div className="grid gap-3">
-          {report.steps.map((step) => (
-            <details key={step.id} className="group rounded border border-slate-200 bg-slate-50 p-3" open={Boolean(step.error)}>
-              <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
-                <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
-                <span>{step.sequence}. {step.requestName}</span>
-                <span className="rounded-full bg-white px-2 py-0.5 text-xs text-teal-700">{step.method}</span>
-                <span className={`rounded-full px-2 py-0.5 text-xs ${step.error ? "bg-rose-100 text-rose-700" : "bg-teal-100 text-teal-700"}`}>
-                  {step.error ? "error" : step.status ?? "ok"}
-                </span>
-                <span className="ml-auto text-xs text-slate-500">iteration {step.iteration}</span>
-              </summary>
-              <div className="mt-3 grid gap-3">
-                <div className="flex flex-wrap gap-2">
-                  {step.resolvedUrl ? <SummaryChip label="URL" value={step.resolvedUrl} /> : null}
-                  {step.durationMs !== null ? <SummaryChip label="Time" value={`${step.durationMs} ms`} tone="amber" /> : null}
-                  {step.sizeBytes !== null ? <SummaryChip label="Size" value={formatSize(step.sizeBytes)} /> : null}
-                </div>
-                {step.error ? (
-                  <div className="rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{step.error}</div>
-                ) : null}
-                {step.missingVariables.length ? (
-                  <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                    Missing variables: {step.missingVariables.join(", ")}
+        <div className="min-h-0 max-h-[48vh] overflow-auto pr-1">
+          <div className="grid gap-3">
+            {report.steps.map((step) => (
+              <details key={step.id} className="group rounded border border-slate-200 bg-slate-50 p-3" open={Boolean(step.error)}>
+                <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
+                  <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
+                  <span>{step.sequence}. {step.requestName}</span>
+                  <span className="rounded-full bg-white px-2 py-0.5 text-xs text-teal-700">{step.method}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs ${step.error ? "bg-rose-100 text-rose-700" : "bg-teal-100 text-teal-700"}`}>
+                    {step.error ? "error" : step.status ?? "ok"}
+                  </span>
+                  <span className="ml-auto text-xs text-slate-500">iteration {step.iteration}</span>
+                </summary>
+                <div className="mt-3 grid gap-3">
+                  <div className="flex flex-wrap gap-2">
+                    {step.resolvedUrl ? <SummaryChip label="URL" value={step.resolvedUrl} /> : null}
+                    {step.durationMs !== null ? <SummaryChip label="Time" value={`${step.durationMs} ms`} tone="amber" /> : null}
+                    {step.sizeBytes !== null ? <SummaryChip label="Size" value={formatSize(step.sizeBytes)} /> : null}
                   </div>
-                ) : null}
-                <ScriptResultsPanel results={step.scriptResults} />
-                {step.responseBodyPreview ? (
-                  <EditorSection title="Response Preview">
-                    <pre className="max-h-60 overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
-                      {formatBodyPreview(step.responseBodyPreview)}
-                    </pre>
-                  </EditorSection>
-                ) : null}
-              </div>
-            </details>
-          ))}
+                  {step.error ? (
+                    <div className="rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{step.error}</div>
+                  ) : null}
+                  {step.missingVariables.length ? (
+                    <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                      Missing variables: {step.missingVariables.join(", ")}
+                    </div>
+                  ) : null}
+                  <ScriptResultsPanel results={step.scriptResults} />
+                  {step.responseBodyPreview ? (
+                    <EditorSection title="Response Preview">
+                      <pre className="max-h-60 overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+                        {formatBodyPreview(step.responseBodyPreview)}
+                      </pre>
+                    </EditorSection>
+                  ) : null}
+                </div>
+              </details>
+            ))}
+          </div>
         </div>
       </EditorSection>
     </div>
@@ -2979,6 +3172,32 @@ function findFolder(collections: ApiCollection[], folderId: string): ApiFolder |
     const folder = findFolderInFolders(collection.folders, folderId);
     if (folder) {
       return folder;
+    }
+  }
+
+  return null;
+}
+
+function findFolderPath(collections: ApiCollection[], folderId: string): { collectionId: string; folderIds: string[] } | null {
+  for (const collection of collections) {
+    const folderIds = findFolderPathInFolders(collection.folders, folderId);
+    if (folderIds) {
+      return { collectionId: collection.id, folderIds };
+    }
+  }
+
+  return null;
+}
+
+function findFolderPathInFolders(folders: ApiFolder[], folderId: string): string[] | null {
+  for (const folder of folders) {
+    if (folder.id === folderId) {
+      return [folder.id];
+    }
+
+    const nested = findFolderPathInFolders(folder.children, folderId);
+    if (nested) {
+      return [folder.id, ...nested];
     }
   }
 
