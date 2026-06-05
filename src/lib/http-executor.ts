@@ -2,6 +2,39 @@ import type { KeyValueRow, RequestDraft, SendErrorResult, SendResult } from "@/l
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+function isBinaryContentType(contentType: string): boolean {
+  const lower = contentType.toLowerCase();
+  return (
+    lower.includes("pdf") ||
+    lower.includes("image/") ||
+    lower.includes("audio/") ||
+    lower.includes("video/") ||
+    lower.includes("zip") ||
+    lower.includes("gzip") ||
+    lower.includes("compress") ||
+    lower.includes("octet-stream") ||
+    lower.includes("excel") ||
+    lower.includes("word") ||
+    lower.includes("powerpoint") ||
+    lower.includes("font") ||
+    lower.includes("application/vnd") ||
+    (!lower.includes("text") &&
+      !lower.includes("json") &&
+      !lower.includes("xml") &&
+      !lower.includes("html") &&
+      !lower.includes("javascript") &&
+      !lower.includes("urlencoded") &&
+      !lower.includes("form-data") &&
+      lower.startsWith("application/"))
+  );
+}
+
+function formatByteLength(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export async function executeHttpRequest(
   draft: RequestDraft,
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -26,7 +59,11 @@ export async function executeHttpRequest(
     });
 
     const bytes = new Uint8Array(await response.arrayBuffer());
-    const bodyText = new TextDecoder().decode(bytes);
+    const contentType = response.headers.get("content-type") ?? "";
+    const bodyText = isBinaryContentType(contentType)
+      ? `[Binary content: ${contentType || "unknown"}, ${formatByteLength(bytes.byteLength)}]`
+      : new TextDecoder().decode(bytes);
+    const bodyBase64 = isBinaryContentType(contentType) ? Buffer.from(bytes).toString("base64") : undefined;
     const durationMs = Math.round(performance.now() - started);
 
     return {
@@ -34,7 +71,8 @@ export async function executeHttpRequest(
       statusText: response.statusText,
       headers: serializeResponseHeaders(response.headers),
       body: bodyText,
-      contentType: response.headers.get("content-type") ?? "",
+      bodyBase64,
+      contentType,
       durationMs,
       sizeBytes: bytes.byteLength
     };

@@ -162,6 +162,7 @@ export interface SendResult {
   statusText: string;
   headers: KeyValueRow[];
   body: string;
+  bodyBase64?: string;
   contentType: string;
   durationMs: number;
   sizeBytes: number;

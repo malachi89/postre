@@ -1597,6 +1597,36 @@ export function PostreApp() {
     activeRequestControllerRef.current?.abort();
   }
 
+  async function sendAndDownloadRequest() {
+    await sendRequest();
+    const tab = requestTabsRef.current.find((t) => t.tabId === activeRequestTabIdRef.current);
+    const result = tab?.response;
+    if (!result || "error" in result || !result.body) return;
+
+    try {
+      let blob: Blob;
+      if (result.bodyBase64) {
+        const binary = atob(result.bodyBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        blob = new Blob([bytes], { type: result.contentType || "application/octet-stream" });
+      } else {
+        blob = new Blob([result.body], { type: result.contentType || "text/plain" });
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const ext = result.contentType.includes("pdf") ? "pdf" : result.contentType.includes("json") ? "json" : result.contentType.includes("xml") ? "xml" : result.contentType.includes("html") ? "html" : "bin";
+      a.download = `response.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    }
+  }
+
   async function saveDraftIfInsideTarget(target: CollectionRunnerTarget) {
     if (!draft?.id || !data) {
       return;
@@ -2177,6 +2207,7 @@ export function PostreApp() {
                     onChange={updateActiveDraft}
                     onSave={() => void saveDraft()}
                     onSend={() => void sendRequest()}
+                    onSendAndDownload={() => void sendAndDownloadRequest()}
                     onCancel={() => cancelRequest()}
                     onDelete={() => void deleteRequest()}
                   />
@@ -2784,6 +2815,7 @@ function RequestEditor({
   onChange,
   onSave,
   onSend,
+  onSendAndDownload,
   onCancel,
   onDelete
 }: {
@@ -2793,12 +2825,14 @@ function RequestEditor({
   onChange: (draft: RequestDraft) => void;
   onSave: () => void;
   onSend: () => void;
+  onSendAndDownload?: () => void;
   onCancel?: () => void;
   onDelete: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<RequestTab | null>("body");
   const [activeScriptTab, setActiveScriptTab] = useState<ScriptTab>("pre-request");
   const [showCodePanel, setShowCodePanel] = useState(true);
+  const [showSendMenu, setShowSendMenu] = useState(false);
   const [curlError, setCurlError] = useState<string | null>(null);
   const [curlNotice, setCurlNotice] = useState<string | null>(null);
   const generatedCurl = useMemo(() => requestDraftToCurl(draft), [draft]);
@@ -2824,6 +2858,18 @@ function RequestEditor({
 
     setActiveScriptTab("pre-request");
   }, [draft.id]);
+
+  useEffect(() => {
+    if (!showSendMenu) return;
+    const handler = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest(".send-button-group")) {
+        setShowSendMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler, true);
+    return () => document.removeEventListener("mousedown", handler, true);
+  }, [showSendMenu]);
 
   async function copyCurl() {
     setCurlError(null);
@@ -2941,15 +2987,47 @@ function RequestEditor({
               Cancel
             </button>
           ) : (
-            <button
-              className="inline-flex h-11 items-center gap-2 rounded bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={onSend}
-              disabled={!draft.url.trim()}
-              type="button"
-            >
-              <Send size={17} />
-              Send
-            </button>
+            <div className="send-button-group relative flex">
+              <button
+                className="inline-flex h-11 items-center gap-2 rounded-l bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={onSend}
+                disabled={!draft.url.trim()}
+                type="button"
+              >
+                <Send size={17} />
+                Send
+              </button>
+              <button
+                className="flex h-11 w-7 items-center justify-center rounded-r bg-teal-600 text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => setShowSendMenu((current) => !current)}
+                type="button"
+                disabled={!draft.url.trim()}
+              >
+                <ChevronDown size={12} />
+              </button>
+              {showSendMenu ? (
+                <div
+                  className="absolute right-0 top-full z-30 mt-1 w-52 rounded border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-xl"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <button
+                    className="flex h-8 w-full items-center px-3 text-left hover:bg-teal-50 hover:text-teal-800"
+                    onClick={() => { setShowSendMenu(false); onSend(); }}
+                    type="button"
+                  >
+                    Send
+                  </button>
+                  <button
+                    className="flex h-8 w-full items-center px-3 text-left hover:bg-teal-50 hover:text-teal-800"
+                    onClick={() => { setShowSendMenu(false); onSendAndDownload?.(); }}
+                    type="button"
+                  >
+                    <Download size={14} className="mr-2" />
+                    Send and Download
+                  </button>
+                </div>
+              ) : null}
+            </div>
           )}
         </div>
       </div>
@@ -4477,11 +4555,22 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
 
   async function downloadBody() {
     try {
-      const blob = new Blob([body], { type: response.contentType || "text/plain" });
+      let blob: Blob;
+      if (response.bodyBase64) {
+        const binary = atob(response.bodyBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        blob = new Blob([bytes], { type: response.contentType || "application/octet-stream" });
+      } else {
+        blob = new Blob([body], { type: response.contentType || "text/plain" });
+      }
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `response.${response.contentType.includes("json") ? "json" : "txt"}`;
+      const ext = response.contentType.includes("pdf") ? "pdf" : response.contentType.includes("json") ? "json" : response.contentType.includes("xml") ? "xml" : response.contentType.includes("html") ? "html" : "bin";
+      a.download = `response.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
