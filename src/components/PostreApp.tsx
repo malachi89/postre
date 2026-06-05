@@ -22,7 +22,8 @@ import {
   Settings,
   Sun,
   Trash2,
-  Upload
+  Upload,
+  X
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -68,6 +69,24 @@ type SendErrorResponseState = {
 type SendResponseState = SendSuccessResponseState | SendErrorResponseState;
 type CollectionRunnerTarget = { type: "collection" | "folder"; id: string; name: string };
 type RequestTreeDropTarget = { requestId: string; collectionId: string; folderId: string | null };
+type OpenRequestTab = {
+  tabId: string;
+  requestId: string;
+  draft: RequestDraft;
+  response: SendResponseState | null;
+  busy: boolean;
+  dirty: boolean;
+  saving: boolean;
+};
+type RequestTabContextMenuState = {
+  tabId: string;
+  x: number;
+  y: number;
+};
+type StoredRequestTabs = {
+  tabs: Array<{ tabId: string; requestId: string }>;
+  activeTabId: string | null;
+};
 type BodyViewMode = "edit" | "pretty";
 type BodyFormat = "json" | "xml" | "text";
 
@@ -85,6 +104,7 @@ const COLLECTIONS_HANDLE_WIDTH = 10;
 const SIDEBAR_PANEL_MIN_HEIGHT = 220;
 const SIDEBAR_HANDLE_HEIGHT = 10;
 const THEME_STORAGE_KEY = "postre-theme";
+const REQUEST_TABS_STORAGE_KEY = "postre-request-tabs";
 const REQUEST_DRAG_DATA_TYPE = "application/x-postre-request-id";
 const TOKEN_PATTERN = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
 type Theme = "light" | "dark";
@@ -562,10 +582,11 @@ export function PostreApp() {
   const [collectionsPanelHeight, setCollectionsPanelHeight] = useState<number | null>(360);
   const [theme, setTheme] = useState<Theme>("light");
   const [themeReady, setThemeReady] = useState(false);
-  const [draft, setDraft] = useState<RequestDraft | null>(null);
-  const [response, setResponse] = useState<SendResponseState | null>(null);
+  const [requestTabs, setRequestTabs] = useState<OpenRequestTab[]>([]);
+  const [activeRequestTabId, setActiveRequestTabId] = useState<string | null>(null);
+  const [requestTabMenu, setRequestTabMenu] = useState<RequestTabContextMenuState | null>(null);
   const [responsePanelHeight, setResponsePanelHeight] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [_appBusy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [mainPanelMode, setMainPanelMode] = useState<MainPanelMode>("request");
   const [showCollectionsPanel, setShowCollectionsPanel] = useState(true);
@@ -580,53 +601,116 @@ export function PostreApp() {
   const sidebarSplitRef = useRef<HTMLDivElement | null>(null);
   const didInitializeEnvironmentSelectionRef = useRef(false);
   const responseSplitRef = useRef<HTMLDivElement | null>(null);
-  const draftRef = useRef<RequestDraft | null>(draft);
-  draftRef.current = draft;
+  const requestTabsRef = useRef<OpenRequestTab[]>(requestTabs);
+  const activeRequestTabIdRef = useRef<string | null>(activeRequestTabId);
+  const didInitializeRequestTabsRef = useRef(false);
+  requestTabsRef.current = requestTabs;
+  activeRequestTabIdRef.current = activeRequestTabId;
 
-  useEffect(() => {
-    if (!draft?.id) return;
-
-    const timer = setTimeout(async () => {
-      const current = draftRef.current;
-      if (!current?.id) return;
-
-      try {
-        await api(`/api/requests/${current.id}`, {
-          method: "PATCH",
-          body: JSON.stringify(current)
-        });
-        setData(await api<AppData>("/api/data"));
-      } catch {
-        // Auto-save errors are silently ignored
-      }
-    }, 800);
-
-    return () => clearTimeout(timer);
-  }, [draft, setData]);
-
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options: { reconcileTabs?: boolean } = {}) => {
+    const reconcileTabs = options.reconcileTabs ?? true;
     const nextData = await api<AppData>("/api/data");
     setData(nextData);
 
-    if (!selectedCollectionId && nextData.collections[0]) {
-      setSelectedCollectionId(nextData.collections[0].id);
+    setSelectedCollectionId((current) => current ?? nextData.collections[0]?.id ?? null);
+
+    if (!didInitializeRequestTabsRef.current) {
+      didInitializeRequestTabsRef.current = true;
+      const restored = restoreRequestTabs(nextData.collections);
+      setRequestTabs(restored.tabs);
+      setActiveRequestTabId(restored.activeTabId);
+      return nextData;
     }
 
-    if (!selectedRequestId) {
-      const first = findFirstRequest(nextData.collections);
-      if (first) {
-        setSelectedRequestId(first.id);
-        setSelectedCollectionId(first.collectionId);
-        setSelectedFolderId(first.folderId ?? null);
-        setDraft(cloneDraft(first));
-      }
-    } else {
-      const current = findRequest(nextData.collections, selectedRequestId);
-      if (current) {
-        setDraft(cloneDraft(current));
-      }
+    if (reconcileTabs) {
+      const currentTabs = requestTabsRef.current;
+      const reconciledTabs = reconcileRequestTabsWithData(currentTabs, nextData.collections);
+      const currentActiveId = activeRequestTabIdRef.current;
+      const nextActiveId = reconciledTabs.some((tab) => tab.tabId === currentActiveId)
+        ? currentActiveId
+        : reconciledTabs[0]?.tabId ?? null;
+
+      setRequestTabs(reconciledTabs);
+      setActiveRequestTabId(nextActiveId);
     }
-  }, [selectedCollectionId, selectedRequestId]);
+
+    return nextData;
+  }, []);
+
+  useEffect(() => {
+    const dirtyTabs = requestTabs.filter((tab) => tab.dirty && !tab.saving && !tab.busy);
+    if (dirtyTabs.length === 0) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      for (const tab of dirtyTabs) {
+        void saveRequestTab(tab.tabId, false);
+      }
+    }, 800);
+
+    return () => window.clearTimeout(timer);
+  }, [requestTabs]);
+
+  useEffect(() => {
+    if (!didInitializeRequestTabsRef.current) {
+      return;
+    }
+
+    const stored: StoredRequestTabs = {
+      tabs: requestTabs.map((tab) => ({ tabId: tab.tabId, requestId: tab.requestId })),
+      activeTabId: activeRequestTabId
+    };
+
+    try {
+      window.localStorage.setItem(REQUEST_TABS_STORAGE_KEY, JSON.stringify(stored));
+    } catch {
+      // Ignore storage failures. The tabs still work for the current session.
+    }
+  }, [activeRequestTabId, requestTabs]);
+
+  const activeRequestTab = useMemo(
+    () => requestTabs.find((tab) => tab.tabId === activeRequestTabId) ?? null,
+    [activeRequestTabId, requestTabs]
+  );
+  const draft = activeRequestTab?.draft ?? null;
+  const response = activeRequestTab?.response ?? null;
+  const busy = activeRequestTab?.busy ?? false;
+
+  useEffect(() => {
+    if (!activeRequestTab) {
+      setSelectedRequestId(null);
+      return;
+    }
+
+    setSelectedRequestId(activeRequestTab.requestId);
+    setSelectedCollectionId(activeRequestTab.draft.collectionId ?? null);
+    setSelectedFolderId(activeRequestTab.draft.folderId ?? null);
+  }, [
+    activeRequestTab?.draft.collectionId,
+    activeRequestTab?.draft.folderId,
+    activeRequestTab?.requestId,
+    activeRequestTab?.tabId
+  ]);
+
+  useEffect(() => {
+    if (!requestTabMenu) {
+      return;
+    }
+
+    function closeMenu() {
+      setRequestTabMenu(null);
+    }
+
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("contextmenu", closeMenu);
+    window.addEventListener("resize", closeMenu);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("contextmenu", closeMenu);
+      window.removeEventListener("resize", closeMenu);
+    };
+  }, [requestTabMenu]);
 
   useEffect(() => {
     if (!data) {
@@ -669,6 +753,155 @@ export function PostreApp() {
     setSelectedEnvironmentId(environmentId);
     setMainPanelMode("environment");
     setShowEnvironmentsPanel(true);
+  }
+
+  function updateRequestTab(tabId: string, updater: (tab: OpenRequestTab) => OpenRequestTab) {
+    setRequestTabs((current) => current.map((tab) => (tab.tabId === tabId ? updater(tab) : tab)));
+  }
+
+  function updateActiveDraft(nextDraft: RequestDraft) {
+    const tabId = activeRequestTabIdRef.current;
+    if (!tabId) {
+      return;
+    }
+
+    updateRequestTab(tabId, (tab) => ({
+      ...tab,
+      draft: cloneDraftDraft(nextDraft),
+      dirty: true
+    }));
+  }
+
+  function openRequestInTab(request: ApiRequest) {
+    focusRequestView();
+    const existing = requestTabsRef.current.find((tab) => tab.requestId === request.id);
+    if (existing) {
+      setActiveRequestTabId(existing.tabId);
+      return;
+    }
+
+    const tab = createOpenRequestTab(request);
+    setRequestTabs((current) => [...current, tab]);
+    setActiveRequestTabId(tab.tabId);
+  }
+
+  function duplicateRequestTab(tabId: string) {
+    const currentTabs = requestTabsRef.current;
+    const tabIndex = currentTabs.findIndex((tab) => tab.tabId === tabId);
+    const tab = currentTabs[tabIndex];
+    if (!tab) {
+      return;
+    }
+
+    const duplicate: OpenRequestTab = {
+      ...tab,
+      tabId: createRequestTabId(),
+      draft: cloneDraftDraft(tab.draft),
+      response: cloneSendResponse(tab.response),
+      busy: false,
+      saving: false
+    };
+
+    setRequestTabs((current) => {
+      const next = [...current];
+      const insertAt = current.findIndex((item) => item.tabId === tabId);
+      next.splice(insertAt >= 0 ? insertAt + 1 : next.length, 0, duplicate);
+      return next;
+    });
+    setActiveRequestTabId(duplicate.tabId);
+    setRequestTabMenu(null);
+  }
+
+  async function saveRequestTab(tabId: string, showMessage = true): Promise<RequestDraft | null> {
+    const tab = requestTabsRef.current.find((item) => item.tabId === tabId);
+    if (!tab?.draft.id) {
+      return null;
+    }
+
+    if (!tab.dirty && !tab.saving) {
+      return tab.draft;
+    }
+
+    const savedDraftFingerprint = fingerprintDraft(tab.draft);
+    updateRequestTab(tabId, (current) => ({ ...current, saving: true }));
+
+    try {
+      const saved = await api<ApiRequest>(`/api/requests/${tab.requestId}`, {
+        method: "PATCH",
+        body: JSON.stringify(tab.draft)
+      });
+      const nextDraft = cloneDraft(saved);
+
+      setRequestTabs((current) =>
+        current.map((item) => {
+          if (item.tabId !== tabId) {
+            return item;
+          }
+
+          const unchangedSinceSaveStarted = fingerprintDraft(item.draft) === savedDraftFingerprint;
+          return {
+            ...item,
+            requestId: saved.id,
+            draft: unchangedSinceSaveStarted ? nextDraft : item.draft,
+            dirty: unchangedSinceSaveStarted ? false : item.dirty,
+            saving: false
+          };
+        })
+      );
+
+      if (showMessage) {
+        setNotice("Request saved.");
+      }
+
+      await refresh({ reconcileTabs: false });
+      return nextDraft;
+    } catch (error) {
+      updateRequestTab(tabId, (current) => ({ ...current, saving: false }));
+      throw error;
+    }
+  }
+
+  async function closeRequestTabs(tabIds: string[], force: boolean) {
+    const closingIds = new Set(tabIds);
+    setRequestTabMenu(null);
+
+    if (!force) {
+      for (const tabId of tabIds) {
+        await saveRequestTab(tabId, false);
+      }
+    }
+
+    const currentTabs = requestTabsRef.current;
+    const firstClosedIndex = Math.min(
+      ...tabIds
+        .map((tabId) => currentTabs.findIndex((tab) => tab.tabId === tabId))
+        .filter((index) => index >= 0)
+    );
+    const remainingTabs = currentTabs.filter((tab) => !closingIds.has(tab.tabId));
+    const activeId = activeRequestTabIdRef.current;
+    const nextActiveId = remainingTabs.some((tab) => tab.tabId === activeId)
+      ? activeId
+      : remainingTabs[firstClosedIndex]?.tabId ?? remainingTabs[firstClosedIndex - 1]?.tabId ?? remainingTabs[0]?.tabId ?? null;
+
+    setRequestTabs(remainingTabs);
+    setActiveRequestTabId(nextActiveId);
+  }
+
+  async function closeOtherRequestTabs(tabId: string, force: boolean) {
+    const closingIds = requestTabsRef.current.filter((tab) => tab.tabId !== tabId).map((tab) => tab.tabId);
+    await closeRequestTabs(closingIds, force);
+    setActiveRequestTabId(tabId);
+  }
+
+  async function closeAllRequestTabs(force: boolean) {
+    await closeRequestTabs(requestTabsRef.current.map((tab) => tab.tabId), force);
+  }
+
+  function handleRequestTabContextMenu(event: React.MouseEvent<HTMLElement>, tabId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    setActiveRequestTabId(tabId);
+    setRequestTabMenu({ tabId, x: event.clientX, y: event.clientY });
   }
 
   function expandFolderPath(folderId: string) {
@@ -730,9 +963,24 @@ export function PostreApp() {
     if (target.folderId) {
       expandFolderPath(target.folderId);
     }
-    if (draft?.id === movedRequest.id) {
-      setDraft(cloneDraft(movedRequest));
-    }
+    setRequestTabs((current) =>
+      current.map((tab) => {
+        if (tab.requestId !== movedRequest.id) {
+          return tab;
+        }
+
+        return {
+          ...tab,
+          draft: tab.dirty
+            ? {
+                ...tab.draft,
+                collectionId: movedRequest.collectionId,
+                folderId: movedRequest.folderId
+              }
+            : cloneDraft(movedRequest)
+        };
+      })
+    );
     setNotice(`Request moved to "${folder?.name ?? collection.name}".`);
     await refresh();
   }
@@ -919,7 +1167,6 @@ export function PostreApp() {
 
     await api(`/api/collections/${collection.id}`, { method: "DELETE" });
     setSelectedRequestId(null);
-    setDraft(null);
     await refresh();
   }
 
@@ -997,58 +1244,53 @@ export function PostreApp() {
     });
 
     focusRequestView();
-    setSelectedRequestId(request.id);
-    setDraft(cloneDraft(request));
+    const tab = createOpenRequestTab(request);
+    setRequestTabs((current) => [...current, tab]);
+    setActiveRequestTabId(tab.tabId);
     setCollectionExpanded(collectionId, true);
     if (selectedFolderId) {
       setFolderExpanded(selectedFolderId, true);
     }
-    await refresh();
+    await refresh({ reconcileTabs: false });
   }
 
   async function saveDraft(showMessage = true): Promise<RequestDraft | null> {
-    if (!draft?.id) {
+    const tabId = activeRequestTabIdRef.current;
+    if (!tabId) {
       return null;
     }
 
-    const saved = await api<ApiRequest>(`/api/requests/${draft.id}`, {
-      method: "PATCH",
-      body: JSON.stringify(draft)
-    });
-    const nextDraft = cloneDraft(saved);
-    setDraft(nextDraft);
-    if (showMessage) {
-      setNotice("Request saved.");
-    }
-    await refresh();
-    return nextDraft;
+    return saveRequestTab(tabId, showMessage);
   }
 
   async function deleteRequest() {
-    if (!draft?.id) {
+    const tab = activeRequestTab;
+    if (!tab?.draft.id) {
       return;
     }
 
-    if (!window.confirm(`Delete request "${draft.name}"?`)) {
+    if (!window.confirm(`Delete request "${tab.draft.name}"?`)) {
       return;
     }
 
-    await api(`/api/requests/${draft.id}`, { method: "DELETE" });
-    setSelectedRequestId(null);
-    setDraft(null);
+    await api(`/api/requests/${tab.requestId}`, { method: "DELETE" });
+    const remainingTabs = requestTabsRef.current.filter((item) => item.requestId !== tab.requestId);
+    setRequestTabs(remainingTabs);
+    setActiveRequestTabId(remainingTabs[0]?.tabId ?? null);
     await refresh();
   }
 
   async function sendRequest() {
-    if (!draft) {
+    const tabId = activeRequestTabIdRef.current;
+    const tab = requestTabsRef.current.find((item) => item.tabId === tabId);
+    if (!tab) {
       return;
     }
 
-    setBusy(true);
-    setResponse(null);
+    updateRequestTab(tab.tabId, (current) => ({ ...current, busy: true, response: null }));
     try {
-      const savedDraft = await saveDraft(false);
-      const sendDraft = savedDraft ?? draft;
+      const savedDraft = await saveRequestTab(tab.tabId, false);
+      const sendDraft = savedDraft ?? tab.draft;
       const result = await api<SendResponseState>("/api/send", {
         method: "POST",
         body: JSON.stringify({
@@ -1057,10 +1299,10 @@ export function PostreApp() {
         }),
         allowError: true
       });
-      setResponse(result);
-      await refresh();
+      updateRequestTab(tab.tabId, (current) => ({ ...current, response: result }));
+      await refresh({ reconcileTabs: false });
     } finally {
-      setBusy(false);
+      updateRequestTab(tab.tabId, (current) => ({ ...current, busy: false }));
     }
   }
 
@@ -1089,16 +1331,11 @@ export function PostreApp() {
   }
 
   function selectRequest(request: ApiRequest) {
-    focusRequestView();
-    setSelectedRequestId(request.id);
-    setSelectedCollectionId(request.collectionId);
-    setSelectedFolderId(request.folderId ?? null);
     setCollectionExpanded(request.collectionId, true);
     if (request.folderId) {
       expandFolderPath(request.folderId);
     }
-    setDraft(cloneDraft(request));
-    setResponse(null);
+    openRequestInTab(request);
   }
 
   function selectEnvironment(environmentId: string | null) {
@@ -1563,6 +1800,18 @@ export function PostreApp() {
 
         <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]">
           <div className={mainPanelMode === "request" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}>
+            {requestTabs.length ? (
+              <RequestTabStrip
+                tabs={requestTabs}
+                activeTabId={activeRequestTabId}
+                onSelectTab={(tabId) => {
+                  focusRequestView();
+                  setActiveRequestTabId(tabId);
+                }}
+                onCloseTab={(tabId) => void closeRequestTabs([tabId], false)}
+                onContextMenu={handleRequestTabContextMenu}
+              />
+            ) : null}
             {draft ? (
               <div ref={responseSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div className="min-h-0 flex-1 overflow-hidden">
@@ -1570,7 +1819,7 @@ export function PostreApp() {
                     draft={draft}
                     busy={busy}
                     variableLookup={variableLookup}
-                    onChange={setDraft}
+                    onChange={updateActiveDraft}
                     onSave={() => void saveDraft()}
                     onSend={() => void sendRequest()}
                     onDelete={() => void deleteRequest()}
@@ -1609,7 +1858,9 @@ export function PostreApp() {
                 onSelectEnvironment={selectEnvironment}
                 onBackToRequests={focusRequestView}
                 onCreateEnvironment={createEnvironment}
-                onRefresh={refresh}
+                onRefresh={async () => {
+                  await refresh();
+                }}
               />
             ) : (
               <div className="flex flex-1 items-center justify-center">
@@ -1638,6 +1889,19 @@ export function PostreApp() {
         />
       ) : null}
 
+      {requestTabMenu ? (
+        <RequestTabContextMenu
+          menu={requestTabMenu}
+          tabCount={requestTabs.length}
+          onDuplicate={() => duplicateRequestTab(requestTabMenu.tabId)}
+          onClose={() => void closeRequestTabs([requestTabMenu.tabId], false)}
+          onForceClose={() => void closeRequestTabs([requestTabMenu.tabId], true)}
+          onCloseOthers={() => void closeOtherRequestTabs(requestTabMenu.tabId, false)}
+          onCloseAll={() => void closeAllRequestTabs(false)}
+          onForceCloseAll={() => void closeAllRequestTabs(true)}
+        />
+      ) : null}
+
       {runnerTarget && data ? (
         <CollectionRunnerModal
           data={data}
@@ -1656,6 +1920,225 @@ export function PostreApp() {
       ) : null}
     </main>
   );
+}
+
+function RequestTabStrip({
+  tabs,
+  activeTabId,
+  onSelectTab,
+  onCloseTab,
+  onContextMenu
+}: {
+  tabs: OpenRequestTab[];
+  activeTabId: string | null;
+  onSelectTab: (tabId: string) => void;
+  onCloseTab: (tabId: string) => void;
+  onContextMenu: (event: React.MouseEvent<HTMLElement>, tabId: string) => void;
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  function updateScrollButtons() {
+    const scroller = scrollerRef.current;
+    if (!scroller) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+
+    setCanScrollLeft(scroller.scrollLeft > 1);
+    setCanScrollRight(scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1);
+  }
+
+  function scrollTabs(direction: -1 | 1) {
+    const scroller = scrollerRef.current;
+    if (!scroller) {
+      return;
+    }
+
+    scroller.scrollBy({
+      left: direction * Math.max(240, Math.round(scroller.clientWidth * 0.7)),
+      behavior: "smooth"
+    });
+  }
+
+  useEffect(() => {
+    updateScrollButtons();
+  }, [tabs.length, activeTabId]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !activeTabId) {
+      return;
+    }
+
+    const activeTab = scroller.querySelector(`[data-request-tab-id="${activeTabId}"]`);
+    activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    updateScrollButtons();
+  }, [activeTabId]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) {
+      return;
+    }
+
+    scroller.addEventListener("scroll", updateScrollButtons);
+    window.addEventListener("resize", updateScrollButtons);
+    return () => {
+      scroller.removeEventListener("scroll", updateScrollButtons);
+      window.removeEventListener("resize", updateScrollButtons);
+    };
+  }, []);
+
+  return (
+    <div className="flex h-11 shrink-0 items-end border-b border-slate-200 bg-slate-100 pl-2 pt-2">
+      <div
+        ref={scrollerRef}
+        className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        <div className="flex min-w-max items-end gap-1 pr-2">
+        {tabs.map((tab) => {
+          const active = tab.tabId === activeTabId;
+          const savingState = tab.saving ? "Saving" : tab.dirty ? "Unsaved changes" : "Saved";
+
+          return (
+            <div
+              key={tab.tabId}
+              data-request-tab-id={tab.tabId}
+              className={`group flex h-9 w-56 shrink-0 items-center rounded-t border px-2 text-sm transition ${
+                active
+                  ? "border-slate-200 border-b-white bg-white text-slate-900 shadow-sm"
+                  : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-white"
+              }`}
+              onContextMenu={(event) => onContextMenu(event, tab.tabId)}
+            >
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                onClick={() => onSelectTab(tab.tabId)}
+                title={`${tab.draft.method} ${tab.draft.name}`}
+              >
+                <span className={`shrink-0 text-xs font-semibold ${active ? "text-teal-700" : "text-slate-500"}`}>
+                  {tab.draft.method}
+                </span>
+                <span className="truncate font-medium">{tab.draft.name || "Untitled request"}</span>
+                {tab.dirty || tab.saving ? (
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${tab.saving ? "bg-amber-400" : "bg-teal-500"}`}
+                    title={savingState}
+                  />
+                ) : null}
+              </button>
+              <button
+                type="button"
+                className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 opacity-80 hover:bg-slate-200 hover:text-slate-700 group-hover:opacity-100"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCloseTab(tab.tabId);
+                }}
+                aria-label={`Close ${tab.draft.name || "request"} tab`}
+                title="Close tab"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          );
+        })}
+        </div>
+      </div>
+      <div className="flex h-9 shrink-0 items-center gap-1 border-l border-slate-200 bg-slate-100 px-2">
+        <button
+          type="button"
+          className="flex h-7 w-7 items-center justify-center rounded border border-slate-300 bg-white text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:bg-slate-50"
+          onClick={() => scrollTabs(-1)}
+          disabled={!canScrollLeft}
+          aria-label="Scroll tabs left"
+          title="Scroll tabs left"
+        >
+          <ChevronLeft size={15} />
+        </button>
+        <button
+          type="button"
+          className="flex h-7 w-7 items-center justify-center rounded border border-slate-300 bg-white text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:bg-slate-50"
+          onClick={() => scrollTabs(1)}
+          disabled={!canScrollRight}
+          aria-label="Scroll tabs right"
+          title="Scroll tabs right"
+        >
+          <ChevronRight size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RequestTabContextMenu({
+  menu,
+  tabCount,
+  onDuplicate,
+  onClose,
+  onForceClose,
+  onCloseOthers,
+  onCloseAll,
+  onForceCloseAll
+}: {
+  menu: RequestTabContextMenuState;
+  tabCount: number;
+  onDuplicate: () => void;
+  onClose: () => void;
+  onForceClose: () => void;
+  onCloseOthers: () => void;
+  onCloseAll: () => void;
+  onForceCloseAll: () => void;
+}) {
+  const hasOtherTabs = tabCount > 1;
+
+  return (
+    <div
+      className="fixed z-50 w-56 rounded border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-xl"
+      style={{ left: menu.x, top: menu.y }}
+      role="menu"
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <ContextMenuItem label="Duplicate Tab" onClick={onDuplicate} />
+      <ContextMenuSeparator />
+      <ContextMenuItem label="Close Tab" onClick={onClose} />
+      <ContextMenuItem label="Force Close Tab" onClick={onForceClose} />
+      <ContextMenuSeparator />
+      <ContextMenuItem label="Close Other Tabs" onClick={onCloseOthers} disabled={!hasOtherTabs} />
+      <ContextMenuItem label="Close All Tabs" onClick={onCloseAll} />
+      <ContextMenuItem label="Force Close All Tabs" onClick={onForceCloseAll} />
+    </div>
+  );
+}
+
+function ContextMenuItem({
+  label,
+  onClick,
+  disabled = false
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex h-8 w-full items-center px-3 text-left disabled:cursor-not-allowed disabled:text-slate-300 enabled:hover:bg-teal-50 enabled:hover:text-teal-800"
+      onClick={onClick}
+      disabled={disabled}
+      role="menuitem"
+    >
+      {label}
+    </button>
+  );
+}
+
+function ContextMenuSeparator() {
+  return <div className="my-1 border-t border-slate-100" />;
 }
 
 function RequestEditor({
@@ -3831,6 +4314,121 @@ function cloneDraft(request: ApiRequest): RequestDraft {
     postRequestScript: request.postRequestScript,
     auth: { ...request.auth }
   };
+}
+
+function cloneDraftDraft(draft: RequestDraft): RequestDraft {
+  return {
+    id: draft.id,
+    collectionId: draft.collectionId,
+    folderId: draft.folderId,
+    name: draft.name,
+    method: draft.method,
+    url: draft.url,
+    headers: draft.headers.map((row) => ({ ...row })),
+    queryParams: draft.queryParams.map((row) => ({ ...row })),
+    bodyMode: draft.bodyMode,
+    bodyRaw: draft.bodyRaw,
+    preRequestScript: draft.preRequestScript,
+    postRequestScript: draft.postRequestScript,
+    auth: { ...draft.auth }
+  };
+}
+
+function createOpenRequestTab(request: ApiRequest, tabId = createRequestTabId()): OpenRequestTab {
+  return {
+    tabId,
+    requestId: request.id,
+    draft: cloneDraft(request),
+    response: null,
+    busy: false,
+    dirty: false,
+    saving: false
+  };
+}
+
+function createRequestTabId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function cloneSendResponse(response: SendResponseState | null): SendResponseState | null {
+  return response ? (JSON.parse(JSON.stringify(response)) as SendResponseState) : null;
+}
+
+function fingerprintDraft(draft: RequestDraft) {
+  return JSON.stringify(draft);
+}
+
+function readStoredRequestTabs(): StoredRequestTabs | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(REQUEST_TABS_STORAGE_KEY);
+    if (!stored) {
+      return null;
+    }
+
+    const parsed = JSON.parse(stored) as StoredRequestTabs;
+    if (!Array.isArray(parsed.tabs)) {
+      return null;
+    }
+
+    return {
+      tabs: parsed.tabs.filter((tab) => typeof tab.tabId === "string" && typeof tab.requestId === "string"),
+      activeTabId: typeof parsed.activeTabId === "string" ? parsed.activeTabId : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function restoreRequestTabs(collections: ApiCollection[]): { tabs: OpenRequestTab[]; activeTabId: string | null } {
+  const stored = readStoredRequestTabs();
+
+  if (stored) {
+    const restoredTabs = stored.tabs.flatMap((tab) => {
+      const request = findRequest(collections, tab.requestId);
+      return request ? [createOpenRequestTab(request, tab.tabId)] : [];
+    });
+    const activeTabId = restoredTabs.some((tab) => tab.tabId === stored.activeTabId)
+      ? stored.activeTabId
+      : restoredTabs[0]?.tabId ?? null;
+
+    return { tabs: restoredTabs, activeTabId };
+  }
+
+  const firstRequest = findFirstRequest(collections);
+  if (!firstRequest) {
+    return { tabs: [], activeTabId: null };
+  }
+
+  const firstTab = createOpenRequestTab(firstRequest);
+  return { tabs: [firstTab], activeTabId: firstTab.tabId };
+}
+
+function reconcileRequestTabsWithData(tabs: OpenRequestTab[], collections: ApiCollection[]) {
+  return tabs.flatMap((tab) => {
+    const request = findRequest(collections, tab.requestId);
+    if (!request) {
+      return [];
+    }
+
+    if (tab.dirty || tab.saving) {
+      return [tab];
+    }
+
+    return [
+      {
+        ...tab,
+        draft: cloneDraft(request)
+      }
+    ];
+  });
 }
 
 function stripVariableId(variable: VariableValue): Omit<VariableValue, "id"> {
