@@ -4597,22 +4597,33 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
 
   const currentBodySearchMatch = clamp(bodySearchMatch, 0, Math.max(bodySearchResults.length - 1, 0));
 
-  useEffect(() => {
-    if (!bodyRef.current || bodySearchResults.length === 0) return;
-    const matchIndex = bodySearchResults[currentBodySearchMatch];
-    if (matchIndex === undefined) return;
-    const pre = bodyRef.current;
-    const textNode = pre.firstChild;
-    if (!textNode) return;
-    const range = document.createRange();
-    range.setStart(textNode, matchIndex);
-    range.setEnd(textNode, matchIndex + bodySearch.length);
-    const selection = window.getSelection();
-    if (selection) {
-      selection.removeAllRanges();
-      selection.addRange(range);
+  const highlightedBody = useMemo(() => {
+    if (!bodySearch.trim() || bodySearchResults.length === 0) return null;
+    const parts: ReactNode[] = [];
+    let lastIndex = 0;
+    for (let i = 0; i < bodySearchResults.length; i++) {
+      const matchIdx = bodySearchResults[i];
+      if (matchIdx > lastIndex) {
+        parts.push(body.slice(lastIndex, matchIdx));
+      }
+      const isActive = i === currentBodySearchMatch;
+      parts.push(
+        <mark
+          key={matchIdx}
+          className={isActive ? "bg-amber-300 text-slate-900" : "bg-yellow-200 text-slate-800"}
+        >
+          {body.slice(matchIdx, matchIdx + bodySearch.length)}
+        </mark>
+      );
+      lastIndex = matchIdx + bodySearch.length;
     }
-  }, [currentBodySearchMatch, bodySearchResults, bodySearch.length]);
+    if (lastIndex < body.length) {
+      parts.push(body.slice(lastIndex));
+    }
+    return parts;
+  }, [body, bodySearch, bodySearchResults, currentBodySearchMatch]);
+
+  const displayedBody = highlightedBody ?? body;
 
   return (
     <div className="grid gap-4">
@@ -4682,10 +4693,16 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
           </button>
         </div>
         {bodyViewMode === "pretty" ? (
-          <PrettyBody body={body} contentType={response.contentType} />
+          <PrettyBody
+            body={body}
+            contentType={response.contentType}
+            searchQuery={bodySearch.trim() || undefined}
+            searchResults={bodySearchResults.length > 0 ? bodySearchResults : undefined}
+            currentSearchMatch={currentBodySearchMatch}
+          />
         ) : (
-          <pre ref={bodyRef} className="max-h-[560px] overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
-            {body}
+          <pre ref={bodyRef} className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+            {displayedBody}
           </pre>
         )}
       </EditorSection>
@@ -5672,13 +5689,28 @@ function formatBodyPreview(body: string): string {
   return body;
 }
 
-function PrettyBody({ body, contentType }: { body: string; contentType: string }) {
+function PrettyBody({
+  body,
+  contentType,
+  searchQuery,
+  searchResults,
+  currentSearchMatch
+}: {
+  body: string;
+  contentType: string;
+  searchQuery?: string;
+  searchResults?: number[];
+  currentSearchMatch?: number;
+}) {
   const formatted = formatPrettyBody(body, contentType);
   const language = detectBodyFormat(body, contentType);
+  const hasSearch = !!searchQuery && !!searchResults && searchResults.length > 0;
 
   return (
-    <pre className="max-h-[560px] overflow-auto rounded border border-slate-800 bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-50">
-      {language === "text" ? (
+    <pre className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-50">
+      {hasSearch ? (
+        renderPrettyWithSearch(formatted, searchQuery!, searchResults!, currentSearchMatch ?? 0)
+      ) : language === "text" ? (
         formatted
       ) : (
         <code>{renderHighlightedBody(formatted, language)}</code>
@@ -5763,6 +5795,48 @@ function prettyPrintXml(xml: string) {
       return line;
     })
     .join("\n");
+}
+
+function renderPrettyWithSearch(
+  formatted: string,
+  searchQuery: string,
+  searchResults: number[],
+  currentSearchMatch: number
+) {
+  const lowerFormatted = formatted.toLowerCase();
+  const lowerQuery = searchQuery.toLowerCase();
+  const localResults: number[] = [];
+  let idx = 0;
+  while (true) {
+    const found = lowerFormatted.indexOf(lowerQuery, idx);
+    if (found === -1) break;
+    localResults.push(found);
+    idx = found + 1;
+  }
+
+  const parts: ReactNode[] = [];
+  let lastIdx = 0;
+  for (let i = 0; i < localResults.length; i++) {
+    const matchStart = localResults[i];
+    if (matchStart > lastIdx) {
+      parts.push(formatted.slice(lastIdx, matchStart));
+    }
+    const matchEnd = matchStart + searchQuery.length;
+    const isActive = i === currentSearchMatch;
+    parts.push(
+      <mark
+        key={`s${i}`}
+        className={isActive ? "bg-amber-300 text-slate-900" : "bg-yellow-200 text-slate-800"}
+      >
+        {formatted.slice(matchStart, matchEnd)}
+      </mark>
+    );
+    lastIdx = matchEnd;
+  }
+  if (lastIdx < formatted.length) {
+    parts.push(formatted.slice(lastIdx));
+  }
+  return parts;
 }
 
 function renderHighlightedBody(body: string, format: Exclude<BodyFormat, "text">) {
