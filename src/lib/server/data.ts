@@ -225,7 +225,7 @@ export function variableToPrismaInput(variable: Omit<VariableValue, "id">) {
   };
 }
 
-function serializeCollection(collection: {
+export function serializeCollection(collection: {
   id: string;
   name: string;
   description: string | null;
@@ -406,7 +406,7 @@ export function serializeCollectionRunReport(run: {
   };
 }
 
-function serializeEnvironment(environment: {
+export function serializeEnvironment(environment: {
   id: string;
   name: string;
   active: boolean;

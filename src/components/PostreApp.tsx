@@ -6,6 +6,7 @@ import {
   ChevronRight,
   ChevronUp,
   Copy,
+  Download,
   Eye,
   EyeOff,
   FileJson,
@@ -30,6 +31,7 @@ import type { ReactNode } from "react";
 import type {
   ApiCollection,
   ApiCollectionRunReport,
+  ApiEnvironment,
   ApiFolder,
   ApiRequest,
   AppData,
@@ -83,6 +85,16 @@ type RequestTabContextMenuState = {
   x: number;
   y: number;
 };
+type RequestTreeContextMenuState = {
+  requestId: string;
+  x: number;
+  y: number;
+};
+type EnvironmentMenuState = {
+  environmentId: string;
+  x: number;
+  y: number;
+};
 type StoredRequestTabs = {
   tabs: Array<{ tabId: string; requestId: string }>;
   activeTabId: string | null;
@@ -91,7 +103,7 @@ type BodyViewMode = "edit" | "pretty";
 type BodyFormat = "json" | "xml" | "text";
 
 const EMPTY_AUTH: AuthConfig = { type: "none" };
-const REQUEST_TABS = ["auth", "headers", "query", "body", "scripts"] as const;
+const REQUEST_TABS = ["body", "auth", "headers", "query", "scripts"] as const;
 type RequestTab = (typeof REQUEST_TABS)[number];
 const SCRIPT_TABS = ["pre-request", "post-request"] as const;
 type ScriptTab = (typeof SCRIPT_TABS)[number];
@@ -585,15 +597,29 @@ export function PostreApp() {
   const [requestTabs, setRequestTabs] = useState<OpenRequestTab[]>([]);
   const [activeRequestTabId, setActiveRequestTabId] = useState<string | null>(null);
   const [requestTabMenu, setRequestTabMenu] = useState<RequestTabContextMenuState | null>(null);
+  const [requestTreeMenu, setRequestTreeMenu] = useState<RequestTreeContextMenuState | null>(null);
+  const [renamingRequestId, setRenamingRequestId] = useState<string | null>(null);
   const [responsePanelHeight, setResponsePanelHeight] = useState<number | null>(null);
   const [_appBusy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [mainPanelMode, setMainPanelMode] = useState<MainPanelMode>("request");
   const [showCollectionsPanel, setShowCollectionsPanel] = useState(true);
   const [showEnvironmentsPanel, setShowEnvironmentsPanel] = useState(true);
+  const [renamingEnvironmentId, setRenamingEnvironmentId] = useState<string | null>(null);
+  const [environmentMenu, setEnvironmentMenu] = useState<EnvironmentMenuState | null>(null);
+  const [showAppMenu, setShowAppMenu] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [runnerTarget, setRunnerTarget] = useState<CollectionRunnerTarget | null>(null);
   const [runnerReport, setRunnerReport] = useState<ApiCollectionRunReport | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
+  const [promptDialog, setPromptDialog] = useState<{
+    message: string;
+    defaultValue: string;
+    onConfirm: (value: string) => void;
+  } | null>(null);
   const [draggedRequestId, setDraggedRequestId] = useState<string | null>(null);
   const [dropTargetCollectionId, setDropTargetCollectionId] = useState<string | null>(null);
   const [dropTargetFolderId, setDropTargetFolderId] = useState<string | null>(null);
@@ -636,6 +662,37 @@ export function PostreApp() {
 
     return nextData;
   }, []);
+
+  const handleExport = useCallback(async () => {
+    try {
+      const result = await api<{ collections: unknown[]; environments: unknown[] }>("/api/export");
+      const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "postre-export.json";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Export failed");
+    }
+    setShowAppMenu(false);
+  }, []);
+
+  const appMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showAppMenu) return;
+    const handler = (event: MouseEvent) => {
+      if (appMenuRef.current && !appMenuRef.current.contains(event.target as Node)) {
+        setShowAppMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler, true);
+    return () => document.removeEventListener("mousedown", handler, true);
+  }, [showAppMenu]);
 
   useEffect(() => {
     const dirtyTabs = requestTabs.filter((tab) => tab.dirty && !tab.saving && !tab.busy);
@@ -711,6 +768,25 @@ export function PostreApp() {
       window.removeEventListener("resize", closeMenu);
     };
   }, [requestTabMenu]);
+
+  useEffect(() => {
+    if (!requestTreeMenu) {
+      return;
+    }
+
+    function closeMenu() {
+      setRequestTreeMenu(null);
+    }
+
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("contextmenu", closeMenu);
+    window.addEventListener("resize", closeMenu);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("contextmenu", closeMenu);
+      window.removeEventListener("resize", closeMenu);
+    };
+  }, [requestTreeMenu]);
 
   useEffect(() => {
     if (!data) {
@@ -902,6 +978,13 @@ export function PostreApp() {
     event.stopPropagation();
     setActiveRequestTabId(tabId);
     setRequestTabMenu({ tabId, x: event.clientX, y: event.clientY });
+  }
+
+  function handleRequestTreeContextMenu(event: React.MouseEvent, requestId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    setRenamingRequestId(null);
+    setRequestTreeMenu({ requestId, x: event.clientX, y: event.clientY });
   }
 
   function expandFolderPath(folderId: string) {
@@ -1105,69 +1188,105 @@ export function PostreApp() {
 
   const activeEnvironmentId = data?.activeEnvironmentId ?? null;
   async function createCollection() {
-    const name = window.prompt("Collection name", "New Collection");
-    if (name === null) {
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const result = await api<{ id: string }>("/api/collections", {
-        method: "POST",
-        body: JSON.stringify({ name })
-      });
-      focusRequestView();
-      setSelectedCollectionId(result.id);
-      setSelectedFolderId(null);
-      setCollectionExpanded(result.id, true);
-      setNotice("Collection created.");
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
+    setPromptDialog({
+      message: "Collection name",
+      defaultValue: "New Collection",
+      onConfirm: (name) => {
+        setPromptDialog(null);
+        setBusy(true);
+        void (async () => {
+          try {
+            const result = await api<{ id: string }>("/api/collections", {
+              method: "POST",
+              body: JSON.stringify({ name })
+            });
+            focusRequestView();
+            setSelectedCollectionId(result.id);
+            setSelectedFolderId(null);
+            setCollectionExpanded(result.id, true);
+            setNotice("Collection created.");
+            await refresh();
+          } finally {
+            setBusy(false);
+          }
+        })();
+      }
+    });
   }
 
   async function createEnvironment() {
-    const name = window.prompt("Environment name", "New Environment");
-    if (name === null) {
-      return;
-    }
-
     setBusy(true);
     try {
       const result = await api<{ id: string }>("/api/environments", {
         method: "POST",
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name: "New Environment" })
       });
       setNotice("Environment created.");
       await refresh();
       focusEnvironmentView(result.id);
+      setRenamingEnvironmentId(result.id);
     } finally {
       setBusy(false);
     }
   }
 
-  async function renameCollection(collection: ApiCollection) {
-    const name = window.prompt("Collection name", collection.name);
-    if (!name) {
+  function handleDeleteEnvironment(environmentId: string) {
+    const env = data?.environments.find((e) => e.id === environmentId);
+    if (!env) {
       return;
     }
 
-    await api(`/api/collections/${collection.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name })
+    const remaining = data!.environments.filter((e) => e.id !== environmentId);
+    const next = remaining.find((e) => e.active) ?? remaining[0] ?? null;
+
+    setConfirmDialog({
+      message: `Delete environment "${env.name}"?`,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        void (async () => {
+          await api(`/api/environments/${environmentId}`, { method: "DELETE" });
+          if (next) {
+            selectEnvironment(next.id);
+          } else {
+            setSelectedEnvironmentId(null);
+            setMainPanelMode("request");
+            setShowEnvironmentsPanel(false);
+          }
+          await refresh();
+        })();
+      }
     });
-    await refresh();
+  }
+
+  async function renameCollection(collection: ApiCollection) {
+    setPromptDialog({
+      message: "Collection name",
+      defaultValue: collection.name,
+      onConfirm: (name) => {
+        setPromptDialog(null);
+        void (async () => {
+          await api(`/api/collections/${collection.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ name })
+          });
+          await refresh();
+        })();
+      }
+    });
   }
 
   async function deleteCollection(collection: ApiCollection) {
-    if (!window.confirm(`Delete collection "${collection.name}"?`)) {
-      return;
-    }
-
-    await api(`/api/collections/${collection.id}`, { method: "DELETE" });
-    setSelectedRequestId(null);
-    await refresh();
+    setConfirmDialog({
+      message: `Delete collection "${collection.name}"?`,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        void (async () => {
+          await api(`/api/collections/${collection.id}`, { method: "DELETE" });
+          setSelectedRequestId(null);
+          await refresh();
+        })();
+      }
+    });
   }
 
   async function createFolder() {
@@ -1177,45 +1296,130 @@ export function PostreApp() {
       return;
     }
 
-    const name = window.prompt("Folder name", "New Folder");
-    if (name === null) {
-      return;
-    }
-
-    const result = await api<{ id: string }>("/api/folders", {
-      method: "POST",
-      body: JSON.stringify({ name, collectionId, parentId: selectedFolderId })
+    const cId = collectionId;
+    setPromptDialog({
+      message: "Folder name",
+      defaultValue: "New Folder",
+      onConfirm: (name) => {
+        setPromptDialog(null);
+        void (async () => {
+          const result = await api<{ id: string }>("/api/folders", {
+            method: "POST",
+            body: JSON.stringify({ name, collectionId: cId, parentId: selectedFolderId })
+          });
+          focusRequestView();
+          setSelectedFolderId(result.id);
+          setCollectionExpanded(cId, true);
+          if (selectedFolderId) {
+            setFolderExpanded(selectedFolderId, true);
+          }
+          await refresh();
+        })();
+      }
     });
-    focusRequestView();
-    setSelectedFolderId(result.id);
-    setCollectionExpanded(collectionId, true);
-    if (selectedFolderId) {
-      setFolderExpanded(selectedFolderId, true);
-    }
-    await refresh();
   }
 
   async function renameFolder(folder: ApiFolder) {
-    const name = window.prompt("Folder name", folder.name);
-    if (!name) {
+    setPromptDialog({
+      message: "Folder name",
+      defaultValue: folder.name,
+      onConfirm: (name) => {
+        setPromptDialog(null);
+        void (async () => {
+          await api(`/api/folders/${folder.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ name })
+          });
+          await refresh();
+        })();
+      }
+    });
+  }
+
+  async function renameRequest(requestId: string, newName: string) {
+    const req = data && findRequest(data.collections, requestId);
+    if (!req) {
       return;
     }
-
-    await api(`/api/folders/${folder.id}`, {
+    await api(`/api/requests/${requestId}`, {
       method: "PATCH",
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ ...req, name: newName })
     });
+    setRenamingRequestId(null);
     await refresh();
   }
 
-  async function deleteFolder(folder: ApiFolder) {
-    if (!window.confirm(`Delete folder "${folder.name}" and its nested content?`)) {
+  async function renameEnvironment(environmentId: string, newName: string) {
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      setRenamingEnvironmentId(null);
       return;
     }
-
-    await api(`/api/folders/${folder.id}`, { method: "DELETE" });
-    setSelectedFolderId(null);
+    await api(`/api/environments/${environmentId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: trimmed })
+    });
+    setRenamingEnvironmentId(null);
     await refresh();
+  }
+
+  function handleEnvironmentContextMenu(event: React.MouseEvent, environmentId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    setRenamingEnvironmentId(null);
+    setEnvironmentMenu({ environmentId, x: event.clientX, y: event.clientY });
+  }
+
+  async function duplicateRequest(request: ApiRequest) {
+    const newRequest = await api<ApiRequest>("/api/requests", {
+      method: "POST",
+      body: JSON.stringify({
+        collectionId: request.collectionId,
+        folderId: request.folderId,
+        name: `${request.name} (copy)`,
+        method: request.method,
+        url: request.url,
+        headers: request.headers,
+        queryParams: request.queryParams,
+        bodyMode: request.bodyMode,
+        bodyRaw: request.bodyRaw,
+        preRequestScript: request.preRequestScript,
+        postRequestScript: request.postRequestScript,
+        auth: request.auth
+      })
+    });
+
+    focusRequestView();
+    const tab = createOpenRequestTab(newRequest);
+    setRequestTabs((current) => [...current, tab]);
+    setActiveRequestTabId(tab.tabId);
+    setCollectionExpanded(newRequest.collectionId, true);
+    if (newRequest.folderId) {
+      setFolderExpanded(newRequest.folderId, true);
+    }
+    setRequestTreeMenu(null);
+    await refresh({ reconcileTabs: false });
+  }
+
+  function copyRequestAsCurl(request: ApiRequest) {
+    const curl = requestDraftToCurl(request);
+    navigator.clipboard.writeText(curl).catch(() => {});
+    setRequestTreeMenu(null);
+    setNotice("Request copied as cURL.");
+  }
+
+  async function deleteFolder(folder: ApiFolder) {
+    setConfirmDialog({
+      message: `Delete folder "${folder.name}" and its nested content?`,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        void (async () => {
+          await api(`/api/folders/${folder.id}`, { method: "DELETE" });
+          setSelectedFolderId(null);
+          await refresh();
+        })();
+      }
+    });
   }
 
   async function createRequest() {
@@ -1269,15 +1473,19 @@ export function PostreApp() {
       return;
     }
 
-    if (!window.confirm(`Delete request "${tab.draft.name}"?`)) {
-      return;
-    }
-
-    await api(`/api/requests/${tab.requestId}`, { method: "DELETE" });
-    const remainingTabs = requestTabsRef.current.filter((item) => item.requestId !== tab.requestId);
-    setRequestTabs(remainingTabs);
-    setActiveRequestTabId(remainingTabs[0]?.tabId ?? null);
-    await refresh();
+    setConfirmDialog({
+      message: `Delete request "${tab.draft.name}"?`,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        void (async () => {
+          await api(`/api/requests/${tab.requestId}`, { method: "DELETE" });
+          const remainingTabs = requestTabsRef.current.filter((item) => item.requestId !== tab.requestId);
+          setRequestTabs(remainingTabs);
+          setActiveRequestTabId(remainingTabs[0]?.tabId ?? null);
+          await refresh();
+        })();
+      }
+    });
   }
 
   async function sendRequest() {
@@ -1545,12 +1753,35 @@ export function PostreApp() {
           <IconButton label="Import" onClick={() => setShowImport(true)}>
             <Upload size={17} />
           </IconButton>
-          <IconButton
-            label={showEnvironmentsPanel ? "Hide environments" : "Show environments"}
-            onClick={() => setShowEnvironmentsPanel((current) => !current)}
-          >
-            <Settings size={17} />
-          </IconButton>
+          <div ref={appMenuRef} className="relative">
+            <IconButton
+              label="App menu"
+              onClick={() => setShowAppMenu((current) => !current)}
+            >
+              <Settings size={17} />
+            </IconButton>
+            {showAppMenu ? (
+              <div className="absolute right-0 top-full z-50 mt-1 w-56 origin-top-right rounded border border-slate-200 bg-white py-1 shadow-lg">
+                <button
+                  className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                  onClick={handleExport}
+                >
+                  <Download size={15} />
+                  Export all to Postman
+                </button>
+                <button
+                  className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                  onClick={() => {
+                    setShowEnvironmentsPanel((current) => !current);
+                    setShowAppMenu(false);
+                  }}
+                >
+                  <Eye size={15} />
+                  {showEnvironmentsPanel ? "Hide" : "Show"} environments
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -1705,6 +1936,10 @@ export function PostreApp() {
                               clearRequestDragState();
                             });
                           }}
+                          onRequestContextMenu={(event, request) => handleRequestTreeContextMenu(event, request.id)}
+                          renamingRequestId={renamingRequestId}
+                          onRenameRequest={renameRequest}
+                          onRenameCancel={() => setRenamingRequestId(null)}
                         />
                       ))
                     )}
@@ -1762,24 +1997,16 @@ export function PostreApp() {
                     />
                   ) : (
                     data.environments.map((environment) => (
-                      <button
+                      <EnvironmentTreeItem
                         key={environment.id}
-                        className={`mb-1 w-full rounded px-3 py-2 text-left text-sm ${
-                          selectedEnvironmentId === environment.id
-                            ? "bg-teal-50 font-semibold text-teal-800"
-                            : "hover:bg-slate-50"
-                        }`}
-                        onClick={() => selectEnvironment(environment.id)}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate">{environment.name}</span>
-                          {environment.active ? (
-                            <span className="rounded border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-700">
-                              active
-                            </span>
-                          ) : null}
-                        </div>
-                      </button>
+                        environment={environment}
+                        selected={selectedEnvironmentId === environment.id}
+                        onSelect={selectEnvironment}
+                        onContextMenu={handleEnvironmentContextMenu}
+                        renaming={renamingEnvironmentId === environment.id}
+                        onRenameSubmit={renameEnvironment}
+                        onRenameCancel={() => setRenamingEnvironmentId(null)}
+                      />
                     ))
                   )}
                 </div>
@@ -1852,12 +2079,13 @@ export function PostreApp() {
 
           <div className={mainPanelMode === "environment" ? "flex min-h-0 flex-1 overflow-hidden" : "hidden"}>
             {data ? (
-              <EnvironmentWorkspace
+               <EnvironmentWorkspace
                 data={data}
                 selectedEnvironmentId={selectedEnvironmentId}
                 onSelectEnvironment={selectEnvironment}
                 onBackToRequests={focusRequestView}
                 onCreateEnvironment={createEnvironment}
+                onDeleteEnvironment={handleDeleteEnvironment}
                 onRefresh={async () => {
                   await refresh();
                 }}
@@ -1902,6 +2130,60 @@ export function PostreApp() {
         />
       ) : null}
 
+      {requestTreeMenu && data ? (
+        (() => {
+          const req = findRequest(data.collections, requestTreeMenu.requestId);
+          return req ? (
+            <RequestTreeContextMenu
+              menu={requestTreeMenu}
+              request={req}
+              onRename={() => {
+                setRequestTreeMenu(null);
+                setRenamingRequestId(req.id);
+              }}
+              onDuplicate={() => duplicateRequest(req)}
+              onCopy={() => copyRequestAsCurl(req)}
+            />
+          ) : null;
+        })()
+      ) : null}
+
+      {environmentMenu && data ? (
+        <EnvironmentContextMenu
+          menu={environmentMenu}
+          onRename={(environmentId) => {
+            setEnvironmentMenu(null);
+            setRenamingEnvironmentId(environmentId);
+          }}
+          onDelete={async (environmentId) => {
+            setEnvironmentMenu(null);
+            const env = data.environments.find((e) => e.id === environmentId);
+            if (!env) {
+              return;
+            }
+            const remaining = data.environments.filter((e) => e.id !== environmentId);
+            const next = remaining.find((e) => e.active) ?? remaining[0] ?? null;
+            setConfirmDialog({
+              message: `Delete environment "${env.name}"?`,
+              onConfirm: () => {
+                setConfirmDialog(null);
+                void (async () => {
+                  await api(`/api/environments/${environmentId}`, { method: "DELETE" });
+                  if (next) {
+                    selectEnvironment(next.id);
+                  } else {
+                    setSelectedEnvironmentId(null);
+                    setMainPanelMode("request");
+                    setShowEnvironmentsPanel(false);
+                  }
+                  await refresh();
+                })();
+              }
+            });
+          }}
+        />
+      ) : null}
+
       {runnerTarget && data ? (
         <CollectionRunnerModal
           data={data}
@@ -1916,6 +2198,23 @@ export function PostreApp() {
             setRunnerReport(report);
             await refresh();
           }}
+        />
+      ) : null}
+
+      {confirmDialog ? (
+        <ConfirmDialog
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      ) : null}
+
+      {promptDialog ? (
+        <PromptDialog
+          message={promptDialog.message}
+          defaultValue={promptDialog.defaultValue}
+          onConfirm={promptDialog.onConfirm}
+          onCancel={() => setPromptDialog(null)}
         />
       ) : null}
     </main>
@@ -2115,6 +2414,58 @@ function RequestTabContextMenu({
   );
 }
 
+function RequestTreeContextMenu({
+  menu,
+  request,
+  onRename,
+  onDuplicate,
+  onCopy
+}: {
+  menu: RequestTreeContextMenuState;
+  request: ApiRequest;
+  onRename: (request: ApiRequest) => void;
+  onDuplicate: (request: ApiRequest) => void;
+  onCopy: (request: ApiRequest) => void;
+}) {
+  return (
+    <div
+      className="fixed z-50 w-48 rounded border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-xl"
+      style={{ left: menu.x, top: menu.y }}
+      role="menu"
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <ContextMenuItem label="Rename" onClick={() => onRename(request)} />
+      <ContextMenuItem label="Copy as cURL" onClick={() => onCopy(request)} />
+      <ContextMenuItem label="Duplicate" onClick={() => onDuplicate(request)} />
+    </div>
+  );
+}
+
+function EnvironmentContextMenu({
+  menu,
+  onRename,
+  onDelete
+}: {
+  menu: EnvironmentMenuState;
+  onRename: (environmentId: string) => void;
+  onDelete: (environmentId: string) => void;
+}) {
+  return (
+    <div
+      className="fixed z-50 w-48 rounded border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-xl"
+      style={{ left: menu.x, top: menu.y }}
+      role="menu"
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <ContextMenuItem label="Rename" onClick={() => onRename(menu.environmentId)} />
+      <ContextMenuSeparator />
+      <ContextMenuItem label="Delete" onClick={() => onDelete(menu.environmentId)} />
+    </div>
+  );
+}
+
 function ContextMenuItem({
   label,
   onClick,
@@ -2158,9 +2509,8 @@ function RequestEditor({
   onSend: () => void;
   onDelete: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<RequestTab | null>("auth");
+  const [activeTab, setActiveTab] = useState<RequestTab | null>("body");
   const [activeScriptTab, setActiveScriptTab] = useState<ScriptTab>("pre-request");
-  const [bodyViewMode, setBodyViewMode] = useState<BodyViewMode>("edit");
   const [showCodePanel, setShowCodePanel] = useState(true);
   const [curlError, setCurlError] = useState<string | null>(null);
   const [curlNotice, setCurlNotice] = useState<string | null>(null);
@@ -2226,12 +2576,6 @@ function RequestEditor({
     <div className="flex min-h-0 flex-1 flex-col border-b border-slate-200 bg-white">
       <div className="border-b border-slate-200 p-4">
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <input
-            className="h-9 w-44 shrink-0 rounded border border-slate-300 px-3 text-xs font-semibold"
-            value={draft.name}
-            onChange={(event) => onChange({ ...draft, name: event.target.value })}
-            aria-label="Request name"
-          />
           <div className="min-w-0 flex-1 overflow-x-auto">
             <div className="flex min-w-max gap-2">
               {REQUEST_TABS.map((tab) => {
@@ -2344,42 +2688,21 @@ function RequestEditor({
                 ) : null}
 
                 {activeTab === "body" ? (
-                  <EditorSection title="Body">
-                    <div className="mb-3 flex flex-wrap items-center gap-2">
-                      <select
-                        className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
-                        value={draft.bodyMode}
-                        onChange={(event) =>
-                          onChange({
-                            ...draft,
-                            bodyMode: event.target.value as BodyMode
-                          })
-                        }
-                      >
-                        <option value="none">none</option>
-                        <option value="raw_json">raw JSON</option>
-                        <option value="raw_text">raw text</option>
-                      </select>
-                      <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
-                        {(["edit", "pretty"] as const).map((mode) => {
-                          const active = bodyViewMode === mode;
-
-                          return (
-                            <button
-                              key={mode}
-                              className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
-                                active
-                                  ? "bg-white text-teal-700 shadow-sm"
-                                  : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
-                              }`}
-                              onClick={() => setBodyViewMode(mode)}
-                              type="button"
-                            >
-                              {mode === "edit" ? "Edit" : "Pretty"}
-                            </button>
-                          );
-                        })}
-                      </div>
+                  <section className="rounded border border-slate-200 bg-white p-3 shadow-panel">
+                      <h2 className="mb-3 text-sm font-semibold text-slate-700">Body</h2>
+                    <div className="mb-3 flex flex-wrap items-center gap-3">
+                      {(["none", "raw_json", "raw_text"] as const).map((mode) => (
+                        <label key={mode} className="flex cursor-pointer items-center gap-1.5 text-sm">
+                          <input
+                            type="radio"
+                            name="bodyMode"
+                            className="text-teal-600 accent-teal-600"
+                            checked={draft.bodyMode === mode}
+                            onChange={() => onChange({ ...draft, bodyMode: mode })}
+                          />
+                          {mode === "none" ? "none" : mode === "raw_json" ? "raw JSON" : "raw text"}
+                        </label>
+                      ))}
                     </div>
                     <div className="grid gap-3">
                       <TokenizedField
@@ -2392,9 +2715,8 @@ function RequestEditor({
                         variableLookup={variableLookup}
                         multiline
                       />
-                      {bodyViewMode === "pretty" ? <PrettyBody body={draft.bodyRaw} contentType={draft.bodyMode} /> : null}
                     </div>
-                  </EditorSection>
+                  </section>
                 ) : null}
 
                 {activeTab === "scripts" ? (
@@ -2756,7 +3078,11 @@ function CollectionTree({
   onCollectionDrop,
   onFolderDragOver,
   onFolderDragLeave,
-  onFolderDrop
+  onFolderDrop,
+  onRequestContextMenu,
+  renamingRequestId,
+  onRenameRequest,
+  onRenameCancel
 }: {
   collection: ApiCollection;
   selectedRequestId: string | null;
@@ -2785,6 +3111,10 @@ function CollectionTree({
   onFolderDragOver: (folder: ApiFolder, requestId: string | null) => void;
   onFolderDragLeave: (folder: ApiFolder) => void;
   onFolderDrop: (folder: ApiFolder, requestId: string | null) => void;
+  onRequestContextMenu: (event: React.MouseEvent, request: ApiRequest) => void;
+  renamingRequestId: string | null;
+  onRenameRequest: (requestId: string, newName: string) => void;
+  onRenameCancel: () => void;
 }) {
   const dropActive = draggedRequestId !== null && dropTargetCollectionId === collection.id;
 
@@ -2864,6 +3194,10 @@ function CollectionTree({
               onFolderDragOver={onFolderDragOver}
               onFolderDragLeave={onFolderDragLeave}
               onFolderDrop={onFolderDrop}
+              onRequestContextMenu={onRequestContextMenu}
+              renamingRequestId={renamingRequestId}
+              onRenameRequest={onRenameRequest}
+              onRenameCancel={onRenameCancel}
             />
           ))}
           {collection.requests.map((request) => (
@@ -2874,6 +3208,10 @@ function CollectionTree({
               onSelect={onSelectRequest}
               onDragStart={onRequestDragStart}
               onDragEnd={onRequestDragEnd}
+              onContextMenu={onRequestContextMenu}
+              renaming={renamingRequestId === request.id}
+              onRenameSubmit={onRenameRequest}
+              onRenameCancel={onRenameCancel}
             />
           ))}
         </div>
@@ -2900,7 +3238,11 @@ function FolderTree({
   onRequestDragEnd,
   onFolderDragOver,
   onFolderDragLeave,
-  onFolderDrop
+  onFolderDrop,
+  onRequestContextMenu,
+  renamingRequestId,
+  onRenameRequest,
+  onRenameCancel
 }: {
   folder: ApiFolder;
   selectedRequestId: string | null;
@@ -2920,6 +3262,10 @@ function FolderTree({
   onFolderDragOver: (folder: ApiFolder, requestId: string | null) => void;
   onFolderDragLeave: (folder: ApiFolder) => void;
   onFolderDrop: (folder: ApiFolder, requestId: string | null) => void;
+  onRequestContextMenu: (event: React.MouseEvent, request: ApiRequest) => void;
+  renamingRequestId: string | null;
+  onRenameRequest: (requestId: string, newName: string) => void;
+  onRenameCancel: () => void;
 }) {
   const selected = selectedFolderId === folder.id;
   const dropActive = draggedRequestId !== null && dropTargetFolderId === folder.id;
@@ -3003,6 +3349,10 @@ function FolderTree({
               onFolderDragOver={onFolderDragOver}
               onFolderDragLeave={onFolderDragLeave}
               onFolderDrop={onFolderDrop}
+              onRequestContextMenu={onRequestContextMenu}
+              renamingRequestId={renamingRequestId}
+              onRenameRequest={onRenameRequest}
+              onRenameCancel={onRenameCancel}
             />
           ))}
           {folder.requests.map((request) => (
@@ -3013,6 +3363,10 @@ function FolderTree({
               onSelect={onSelectRequest}
               onDragStart={onRequestDragStart}
               onDragEnd={onRequestDragEnd}
+              onContextMenu={onRequestContextMenu}
+              renaming={renamingRequestId === request.id}
+              onRenameSubmit={onRenameRequest}
+              onRenameCancel={onRenameCancel}
             />
           ))}
         </div>
@@ -3026,34 +3380,153 @@ function RequestTreeItem({
   selected,
   onSelect,
   onDragStart,
-  onDragEnd
+  onDragEnd,
+  onContextMenu,
+  renaming,
+  onRenameSubmit,
+  onRenameCancel
 }: {
   request: ApiRequest;
   selected: boolean;
   onSelect: (request: ApiRequest) => void;
   onDragStart: (request: ApiRequest) => void;
   onDragEnd: () => void;
+  onContextMenu: (event: React.MouseEvent, request: ApiRequest) => void;
+  renaming: boolean;
+  onRenameSubmit: (requestId: string, newName: string) => void;
+  onRenameCancel: () => void;
 }) {
+  const [editValue, setEditValue] = useState(request.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renaming && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+    if (!renaming) {
+      setEditValue(request.name);
+    }
+  }, [renaming, request.name]);
+
   return (
-    <button
-      type="button"
-      draggable
-      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${
+    <div
+      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm ${
         selected ? "bg-teal-600 text-white" : "hover:bg-slate-50"
       }`}
-      onClick={() => onSelect(request)}
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData(REQUEST_DRAG_DATA_TYPE, request.id);
-        event.dataTransfer.setData("text/plain", request.id);
-        onDragStart(request);
-      }}
-      onDragEnd={onDragEnd}
     >
-      <FileText size={14} className={selected ? "text-white" : "text-slate-500"} />
-      <span className={selected ? "text-white" : "font-semibold text-teal-700"}>{request.method}</span>
-      <span className="truncate">{request.name}</span>
-    </button>
+      {renaming ? (
+        <input
+          ref={inputRef}
+          type="text"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              onRenameSubmit(request.id, editValue);
+            } else if (e.key === "Escape") {
+              onRenameCancel();
+            }
+          }}
+          onBlur={() => onRenameSubmit(request.id, editValue)}
+          className="min-w-0 flex-1 rounded border border-teal-500 px-1 py-0.5 text-sm outline-none"
+          autoFocus
+        />
+      ) : (
+        <button
+          type="button"
+          draggable
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          onClick={() => onSelect(request)}
+          onContextMenu={(event) => onContextMenu(event, request)}
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData(REQUEST_DRAG_DATA_TYPE, request.id);
+            event.dataTransfer.setData("text/plain", request.id);
+            onDragStart(request);
+          }}
+          onDragEnd={onDragEnd}
+        >
+          <FileText size={14} className={selected ? "text-white" : "text-slate-500"} />
+          <span className={selected ? "text-white" : "font-semibold text-teal-700"}>{request.method}</span>
+          <span className="truncate">{request.name}</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+function EnvironmentTreeItem({
+  environment,
+  selected,
+  onSelect,
+  onContextMenu,
+  renaming,
+  onRenameSubmit,
+  onRenameCancel
+}: {
+  environment: ApiEnvironment;
+  selected: boolean;
+  onSelect: (environmentId: string) => void;
+  onContextMenu: (event: React.MouseEvent, environmentId: string) => void;
+  renaming: boolean;
+  onRenameSubmit: (environmentId: string, newName: string) => void;
+  onRenameCancel: () => void;
+}) {
+  const [editValue, setEditValue] = useState(environment.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renaming && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+    if (!renaming) {
+      setEditValue(environment.name);
+    }
+  }, [renaming, environment.name]);
+
+  return (
+    <div
+      className={`mb-1 w-full rounded px-3 py-2 text-left text-sm ${
+        selected ? "bg-teal-50 font-semibold text-teal-800" : "hover:bg-slate-50"
+      }`}
+    >
+      {renaming ? (
+        <input
+          ref={inputRef}
+          type="text"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              onRenameSubmit(environment.id, editValue);
+            } else if (e.key === "Escape") {
+              onRenameCancel();
+            }
+          }}
+          onBlur={() => onRenameSubmit(environment.id, editValue)}
+          className="min-w-0 flex-1 rounded border border-teal-500 px-1 py-0.5 text-sm outline-none"
+          autoFocus
+        />
+      ) : (
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-2 text-left"
+          onClick={() => onSelect(environment.id)}
+          onContextMenu={(event) => onContextMenu(event, environment.id)}
+        >
+          <span className="truncate">{environment.name}</span>
+          {environment.active ? (
+            <span className="rounded border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-700">
+              active
+            </span>
+          ) : null}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -3329,7 +3802,8 @@ function EnvironmentWorkspace({
   onSelectEnvironment,
   onBackToRequests,
   onCreateEnvironment,
-  onRefresh
+  onRefresh,
+  onDeleteEnvironment
 }: {
   data: AppData;
   selectedEnvironmentId: string | null;
@@ -3337,32 +3811,22 @@ function EnvironmentWorkspace({
   onBackToRequests: () => void;
   onCreateEnvironment: () => Promise<void>;
   onRefresh: () => Promise<void>;
+  onDeleteEnvironment: (environmentId: string) => void;
 }) {
   const selectedEnv = data.environments.find((environment) => environment.id === selectedEnvironmentId) ?? null;
   const [globalRows, setGlobalRows] = useState<VariableValue[]>(data.globalVariables);
   const [envRows, setEnvRows] = useState<VariableValue[]>(selectedEnv?.variables ?? []);
-  const [envName, setEnvName] = useState(selectedEnv?.name ?? "");
-
   useEffect(() => {
     const nextEnv = data.environments.find((environment) => environment.id === selectedEnvironmentId) ?? null;
     setEnvRows(nextEnv?.variables ?? []);
-    setEnvName(nextEnv?.name ?? "");
   }, [data.environments, selectedEnvironmentId]);
 
   async function deleteEnvironment() {
-    if (!selectedEnv || !window.confirm(`Delete environment "${selectedEnv.name}"?`)) {
+    if (!selectedEnv) {
       return;
     }
 
-    const remaining = data.environments.filter((environment) => environment.id !== selectedEnv.id);
-    const nextEnvironment = remaining.find((environment) => environment.active) ?? remaining[0] ?? null;
-
-    await api(`/api/environments/${selectedEnv.id}`, { method: "DELETE" });
-    onSelectEnvironment(nextEnvironment?.id ?? null);
-    if (!nextEnvironment) {
-      onBackToRequests();
-    }
-    await onRefresh();
+    onDeleteEnvironment(selectedEnv.id);
   }
 
   async function saveGlobals() {
@@ -3381,10 +3845,6 @@ function EnvironmentWorkspace({
       return;
     }
 
-    await api(`/api/environments/${selectedEnv.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name: envName })
-    });
     await api("/api/variables/bulk", {
       method: "PUT",
       body: JSON.stringify({
@@ -3466,13 +3926,6 @@ function EnvironmentWorkspace({
           <EditorSection title="Environment Variables">
             {selectedEnv ? (
               <>
-                <div className="mb-3 flex gap-2">
-                  <input
-                    className="h-9 flex-1 rounded border border-slate-300 px-3 text-sm font-semibold"
-                    value={envName}
-                    onChange={(event) => setEnvName(event.target.value)}
-                  />
-                </div>
                 <VariableTable rows={envRows} onChange={setEnvRows} />
                 <button
                   className="mt-3 inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
@@ -3732,30 +4185,50 @@ function ImportModal({
 
 function SuccessResponse({ response, body }: { response: SendSuccessResponseState; body: string }) {
   const [bodyViewMode, setBodyViewMode] = useState<BodyViewMode>("pretty");
+  const [copied, setCopied] = useState(false);
+
+  async function copyBody() {
+    try {
+      await navigator.clipboard.writeText(body);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // ignore
+    }
+  }
 
   return (
     <div className="grid gap-4">
       <ScriptResultsPanel results={response.scriptResults ?? []} />
-      <EditorSection title="Body">
-        <div className="mb-3 inline-flex rounded border border-slate-200 bg-slate-50 p-1">
-          {(["pretty", "edit"] as const).map((mode) => {
-            const active = bodyViewMode === mode;
+      <EditorSection title="Response Body">
+        <div className="mb-3 flex items-center gap-2">
+          <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
+            {(["pretty", "edit"] as const).map((mode) => {
+              const active = bodyViewMode === mode;
 
-            return (
-              <button
-                key={mode}
-                className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
-                  active
-                    ? "bg-white text-teal-700 shadow-sm"
-                    : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
-                }`}
-                onClick={() => setBodyViewMode(mode)}
-                type="button"
-              >
-                {mode === "pretty" ? "Pretty" : "Raw"}
-              </button>
-            );
-          })}
+              return (
+                <button
+                  key={mode}
+                  className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
+                    active
+                      ? "bg-white text-teal-700 shadow-sm"
+                      : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
+                  }`}
+                  onClick={() => setBodyViewMode(mode)}
+                  type="button"
+                >
+                  {mode === "pretty" ? "Pretty" : "Raw"}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            className="ml-auto inline-flex items-center gap-1 rounded px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+            onClick={copyBody}
+            type="button"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
         </div>
         {bodyViewMode === "pretty" ? (
           <PrettyBody body={body} contentType={response.contentType} />
@@ -3957,6 +4430,103 @@ function Modal({
           </button>
         </div>
         <div className="p-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  message,
+  onConfirm,
+  onCancel
+}: {
+  message: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-6">
+      <div className="w-full max-w-sm rounded bg-white shadow-2xl">
+        <div className="p-6">
+          <p className="text-sm text-slate-700">{message}</p>
+          <div className="mt-6 flex justify-end gap-2">
+            <button
+              type="button"
+              className="h-9 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+              onClick={onCancel}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="h-9 rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700"
+              onClick={onConfirm}
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PromptDialog({
+  message,
+  defaultValue,
+  onConfirm,
+  onCancel
+}: {
+  message: string;
+  defaultValue: string;
+  onConfirm: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(defaultValue);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-6">
+      <div className="w-full max-w-sm rounded bg-white shadow-2xl">
+        <div className="p-6">
+          <p className="mb-3 text-sm text-slate-700">{message}</p>
+          <input
+            ref={inputRef}
+            type="text"
+            className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && value) {
+                onConfirm(value);
+              } else if (event.key === "Escape") {
+                onCancel();
+              }
+            }}
+          />
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              className="h-9 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+              onClick={onCancel}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="h-9 rounded bg-teal-600 px-4 text-sm text-white hover:bg-teal-700 disabled:opacity-50"
+              onClick={() => onConfirm(value)}
+              disabled={!value}
+            >
+              Confirm
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
