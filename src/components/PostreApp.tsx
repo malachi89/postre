@@ -355,10 +355,13 @@ function TokenizedField({
   const ref = useRef<HTMLDivElement | null>(null);
   const selectionRef = useRef<SelectionOffsets | null>(null);
   const isComposingRef = useRef(false);
+  const [isFocused, setIsFocused] = useState(false);
   const [autocomplete, setAutocomplete] = useState<{
     match: VariableAutocompleteMatch;
     activeIndex: number;
   } | null>(null);
+  const plainHtml = useMemo(() => escapeHtml(value), [value]);
+  const tokenizedHtml = useMemo(() => renderTokenizedHtml(value, variableLookup), [value, variableLookup]);
   const suggestions = useMemo(
     () => (autocomplete ? getVariableSuggestions(variableLookup, autocomplete.match.query) : []),
     [autocomplete, variableLookup]
@@ -367,12 +370,25 @@ function TokenizedField({
 
   useLayoutEffect(() => {
     const element = ref.current;
-    if (!element || document.activeElement !== element || isComposingRef.current || !selectionRef.current) {
+    if (!element) {
+      return;
+    }
+
+    const isEditing = isFocused || document.activeElement === element;
+    if (isEditing) {
+      if (readEditableText(element, multiline) !== value || element.innerHTML !== plainHtml) {
+        element.textContent = value;
+      }
+    } else if (element.innerHTML !== tokenizedHtml) {
+      element.innerHTML = tokenizedHtml;
+    }
+
+    if (document.activeElement !== element || isComposingRef.current || !selectionRef.current) {
       return;
     }
 
     restoreSelection(element, selectionRef.current);
-  }, [value]);
+  }, [isFocused, multiline, plainHtml, tokenizedHtml, value]);
 
   function updateAutocomplete(nextValue: string, nextSelection: SelectionOffsets | null) {
     const match = nextSelection ? findVariableAutocompleteMatch(nextValue, nextSelection.start, nextSelection.end) : null;
@@ -480,6 +496,7 @@ function TokenizedField({
         onBlur={() => {
           selectionRef.current = null;
           setAutocomplete(null);
+          setIsFocused(false);
         }}
         onKeyDown={(event) => {
           if (autocomplete) {
@@ -535,7 +552,14 @@ function TokenizedField({
           refreshAutocompleteFromDom();
         }}
         onFocus={() => {
-          refreshAutocompleteFromDom();
+          const element = ref.current;
+          const nextSelection = element ? getSelectionOffsets(element) : null;
+
+          selectionRef.current = nextSelection;
+          setIsFocused(true);
+          if (element) {
+            updateAutocomplete(readEditableText(element, multiline), nextSelection);
+          }
         }}
         onCompositionStart={() => {
           isComposingRef.current = true;
@@ -544,7 +568,6 @@ function TokenizedField({
           isComposingRef.current = false;
           syncValue();
         }}
-        dangerouslySetInnerHTML={{ __html: renderTokenizedHtml(value, variableLookup) }}
       />
       {autocomplete ? (
         <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">

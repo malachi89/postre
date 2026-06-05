@@ -47,4 +47,35 @@ describe("variable autocomplete", () => {
       selection: 31
     });
   });
+
+  it("extends the replacement through existing closing braces", () => {
+    expect(findVariableAutocompleteMatch("{{}}/attachments/estimate/527152", 2, 2)).toEqual({
+      query: "",
+      replaceFrom: 0,
+      replaceTo: 4
+    });
+
+    expect(
+      applyVariableAutocomplete(
+        "{{}}/attachments/estimate/527152",
+        {
+          query: "",
+          replaceFrom: 0,
+          replaceTo: 4
+        },
+        "context"
+      )
+    ).toEqual({
+      value: "{{context}}/attachments/estimate/527152",
+      selection: 11
+    });
+  });
+
+  it("uses the whole token as the query when the cursor is inside it", () => {
+    expect(findVariableAutocompleteMatch("{{context}}/attachments/estimate/527152", 2, 2)).toEqual({
+      query: "context",
+      replaceFrom: 0,
+      replaceTo: 11
+    });
+  });
 });

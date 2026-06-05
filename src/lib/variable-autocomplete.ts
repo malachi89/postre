@@ -16,6 +16,7 @@ export interface VariableSuggestion extends VariableLookupEntry {
 }
 
 const VARIABLE_TRIGGER_PATTERN = /\{\{\s*([A-Za-z0-9_.-]*)$/;
+const VARIABLE_SUFFIX_PATTERN = /^([A-Za-z0-9_.-]*)(\s*\}\})?/;
 
 export function findVariableAutocompleteMatch(
   text: string,
@@ -33,10 +34,14 @@ export function findVariableAutocompleteMatch(
     return null;
   }
 
+  const suffix = VARIABLE_SUFFIX_PATTERN.exec(text.slice(selectionEnd));
+  const suffixQuery = suffix?.[1] ?? "";
+  const suffixClose = suffix?.[2] ?? "";
+
   return {
-    query: match[1] ?? "",
+    query: `${match[1] ?? ""}${suffixQuery}`,
     replaceFrom: match.index,
-    replaceTo: selectionEnd
+    replaceTo: selectionEnd + suffixQuery.length + suffixClose.length
   };
 }
 
