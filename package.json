@@ -10,7 +10,12 @@
     "test": "vitest run",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
-    "prisma:generate": "prisma generate"
+    "prisma:generate": "prisma generate",
+    "local:run": "node scripts/postre-local-runner.mjs",
+    "local:install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "local:install:mac": "sh scripts/install-macos.sh",
+    "local:stop:win": "powershell -ExecutionPolicy Bypass -File scripts/stop-windows.ps1",
+    "local:stop:mac": "sh scripts/stop-macos.sh"
   },
   "dependencies": {
     "@prisma/client": "6.19.2",

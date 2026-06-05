@@ -11,6 +11,50 @@ PostRE is a local, personal Postman-like HTTP client. It runs on localhost, stor
 
 ## Local Setup
 
+### One-time local app install
+
+After cloning, install the local runner once. It keeps PostRE running on
+http://localhost:5500 and starts it again when the computer restarts.
+
+Windows:
+
+```powershell
+git clone <repo-url>
+cd postre
+powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1
+```
+
+macOS:
+
+```bash
+git clone <repo-url>
+cd postre
+chmod +x scripts/*.sh
+./scripts/install-macos.sh
+```
+
+Open http://localhost:5500 after the initial npm and Prisma setup finishes.
+The runner writes logs to `postre-local-runner.log` and
+`postre-local-server.log`.
+
+For updates, run:
+
+```bash
+git pull
+```
+
+The local runner watches the repo, reruns the needed setup steps, and restarts
+the server when updates land.
+
+To stop the local runner:
+
+```bash
+npm run local:stop:win  # Windows
+npm run local:stop:mac  # macOS
+```
+
+### Manual development
+
 ```bash
 npm install
 npm run db:push
@@ -30,6 +74,9 @@ npm run lint     # ESLint
 npm run test     # unit tests
 npm run db:push  # sync SQLite schema
 npm run db:seed  # optional demo data
+npm run local:run          # run the autostart-compatible local runner
+npm run local:install:win  # install Windows logon startup task
+npm run local:install:mac  # install macOS LaunchAgent
 ```
 
 ## MVP Scope
@@ -54,4 +101,3 @@ Implemented in the first MVP:
 - More complete tests and browser-level UI checks.
 - Export back to Postman format.
 - Electron or Tauri packaging.
-- Windows autostart.
