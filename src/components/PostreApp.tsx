@@ -26,6 +26,7 @@ import {
   Upload
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type {
   ApiCollection,
   ApiCollectionRunReport,
@@ -68,6 +69,8 @@ type SendErrorResponseState = {
 
 type SendResponseState = SendSuccessResponseState | SendErrorResponseState;
 type CollectionRunnerTarget = { type: "collection" | "folder"; id: string; name: string };
+type BodyViewMode = "edit" | "pretty";
+type BodyFormat = "json" | "xml" | "text";
 
 const EMPTY_AUTH: AuthConfig = { type: "none" };
 const REQUEST_TABS = ["auth", "headers", "query", "body", "scripts"] as const;
@@ -414,7 +417,7 @@ function TokenizedField({
         className={[
           "w-full rounded border border-slate-300 bg-white font-mono text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100",
           multiline
-            ? "min-h-64 overflow-auto whitespace-pre-wrap break-words p-3 leading-6"
+            ? "min-h-64 max-h-[32rem] overflow-y-auto whitespace-pre-wrap break-words p-3 leading-6"
             : "min-h-[2.25rem] overflow-x-auto overflow-y-hidden whitespace-pre px-3 py-1.5 leading-5",
           disabled ? "cursor-not-allowed bg-slate-50 text-slate-400" : "",
           className
@@ -1650,6 +1653,7 @@ function RequestEditor({
 }) {
   const [activeTab, setActiveTab] = useState<RequestTab | null>("auth");
   const [activeScriptTab, setActiveScriptTab] = useState<ScriptTab>("pre-request");
+  const [bodyViewMode, setBodyViewMode] = useState<BodyViewMode>("edit");
   const [showCodePanel, setShowCodePanel] = useState(true);
   const [curlError, setCurlError] = useState<string | null>(null);
   const [curlNotice, setCurlNotice] = useState<string | null>(null);
@@ -1834,7 +1838,7 @@ function RequestEditor({
 
                 {activeTab === "body" ? (
                   <EditorSection title="Body">
-                    <div className="mb-3">
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
                       <select
                         className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
                         value={draft.bodyMode}
@@ -1849,17 +1853,40 @@ function RequestEditor({
                         <option value="raw_json">raw JSON</option>
                         <option value="raw_text">raw text</option>
                       </select>
+                      <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
+                        {(["edit", "pretty"] as const).map((mode) => {
+                          const active = bodyViewMode === mode;
+
+                          return (
+                            <button
+                              key={mode}
+                              className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
+                                active
+                                  ? "bg-white text-teal-700 shadow-sm"
+                                  : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
+                              }`}
+                              onClick={() => setBodyViewMode(mode)}
+                              type="button"
+                            >
+                              {mode === "edit" ? "Edit" : "Pretty"}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <TokenizedField
-                      className="resize-y"
-                      value={draft.bodyRaw}
-                      disabled={draft.bodyMode === "none"}
-                      onChange={(value) => onChange({ ...draft, bodyRaw: value })}
-                      placeholder={draft.bodyMode === "raw_json" ? '{\n  "name": "PostRE"\n}' : ""}
-                      aria-label="Request body"
-                      variableLookup={variableLookup}
-                      multiline
-                    />
+                    <div className="grid gap-3">
+                      <TokenizedField
+                        className="resize-y"
+                        value={draft.bodyRaw}
+                        disabled={draft.bodyMode === "none"}
+                        onChange={(value) => onChange({ ...draft, bodyRaw: value })}
+                        placeholder={draft.bodyMode === "raw_json" ? '{\n  "name": "PostRE"\n}' : ""}
+                        aria-label="Request body"
+                        variableLookup={variableLookup}
+                        multiline
+                      />
+                      {bodyViewMode === "pretty" ? <PrettyBody body={draft.bodyRaw} contentType={draft.bodyMode} /> : null}
+                    </div>
                   </EditorSection>
                 ) : null}
 
@@ -3077,6 +3104,8 @@ function ImportModal({
 }
 
 function SuccessResponse({ response, body }: { response: SendSuccessResponseState; body: string }) {
+  const [bodyViewMode, setBodyViewMode] = useState<BodyViewMode>("pretty");
+
   return (
     <div className="grid gap-4">
       <ScriptResultsPanel results={response.scriptResults ?? []} />
@@ -3098,9 +3127,33 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
         </div>
       </details>
       <EditorSection title="Body">
-        <pre className="max-h-[560px] overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
-          {body}
-        </pre>
+        <div className="mb-3 inline-flex rounded border border-slate-200 bg-slate-50 p-1">
+          {(["pretty", "edit"] as const).map((mode) => {
+            const active = bodyViewMode === mode;
+
+            return (
+              <button
+                key={mode}
+                className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
+                  active
+                    ? "bg-white text-teal-700 shadow-sm"
+                    : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
+                }`}
+                onClick={() => setBodyViewMode(mode)}
+                type="button"
+              >
+                {mode === "pretty" ? "Pretty" : "Raw"}
+              </button>
+            );
+          })}
+        </div>
+        {bodyViewMode === "pretty" ? (
+          <PrettyBody body={body} contentType={response.contentType} />
+        ) : (
+          <pre className="max-h-[560px] overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+            {body}
+          </pre>
+        )}
       </EditorSection>
     </div>
   );
@@ -3649,6 +3702,229 @@ function formatBodyPreview(body: string): string {
   }
 
   return body;
+}
+
+function PrettyBody({ body, contentType }: { body: string; contentType: string }) {
+  const formatted = formatPrettyBody(body, contentType);
+  const language = detectBodyFormat(body, contentType);
+
+  return (
+    <pre className="max-h-[560px] overflow-auto rounded border border-slate-800 bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-50">
+      {language === "text" ? (
+        formatted
+      ) : (
+        <code>{renderHighlightedBody(formatted, language)}</code>
+      )}
+    </pre>
+  );
+}
+
+function formatPrettyBody(body: string, contentType: string) {
+  const format = detectBodyFormat(body, contentType);
+  if (format === "json") {
+    try {
+      return JSON.stringify(JSON.parse(body), null, 2);
+    } catch {
+      return body;
+    }
+  }
+
+  if (format === "xml") {
+    return prettyPrintXml(body);
+  }
+
+  return body;
+}
+
+function detectBodyFormat(body: string, contentType: string): BodyFormat {
+  const trimmed = body.trim();
+  const normalizedContentType = contentType.toLowerCase();
+
+  if (normalizedContentType.includes("json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return "json";
+  }
+
+  if (
+    normalizedContentType.includes("xml") ||
+    normalizedContentType.includes("html") ||
+    trimmed.startsWith("<")
+  ) {
+    return "xml";
+  }
+
+  return "text";
+}
+
+function prettyPrintXml(xml: string) {
+  const cleaned = xml.trim();
+  if (!cleaned) {
+    return "";
+  }
+
+  const tokens = cleaned
+    .replace(/>\s+</g, "><")
+    .replace(/</g, "\n<")
+    .replace(/\n{2,}/g, "\n")
+    .split("\n")
+    .filter(Boolean);
+
+  let indent = 0;
+
+  return tokens
+    .map((token) => {
+      const trimmed = token.trim();
+      if (!trimmed) {
+        return "";
+      }
+
+      if (trimmed.startsWith("</")) {
+        indent = Math.max(indent - 1, 0);
+      }
+
+      const line = `${"  ".repeat(indent)}${trimmed}`;
+
+      if (
+        trimmed.startsWith("<") &&
+        !trimmed.startsWith("</") &&
+        !trimmed.endsWith("/>") &&
+        !trimmed.includes("</")
+      ) {
+        indent += 1;
+      }
+
+      return line;
+    })
+    .join("\n");
+}
+
+function renderHighlightedBody(body: string, format: Exclude<BodyFormat, "text">) {
+  if (format === "json") {
+    return renderJsonHighlight(body);
+  }
+
+  return renderXmlHighlight(body);
+}
+
+function renderJsonHighlight(body: string) {
+  const parts: ReactNode[] = [];
+  const regex = /("(?:\\.|[^"\\])*")|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|(true|false|null)|([{}[\],:])/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(body))) {
+    if (match.index > lastIndex) {
+      parts.push(body.slice(lastIndex, match.index));
+    }
+
+    const [token, stringToken, numberToken, literalToken] = match;
+    const nextNonSpace = body.slice(match.index + token.length).match(/\S/)?.[0] ?? "";
+    const style = stringToken
+      ? { color: nextNonSpace === ":" ? "#7dd3fc" : "#86efac" }
+      : numberToken
+        ? { color: "#fbbf24" }
+        : literalToken === "null"
+          ? { color: "#fda4af" }
+          : literalToken
+            ? { color: "#c4b5fd" }
+            : { color: "#94a3b8" };
+
+    parts.push(
+      <span key={`${match.index}-${token}`} style={style}>
+        {stringToken ? renderVariableTokens(token) : token}
+      </span>
+    );
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < body.length) {
+    parts.push(body.slice(lastIndex));
+  }
+
+  return <>{parts}</>;
+}
+
+function renderXmlHighlight(body: string) {
+  const parts: ReactNode[] = [];
+  const regex = /(<\/?[^>]+>)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(body))) {
+    if (match.index > lastIndex) {
+      parts.push(body.slice(lastIndex, match.index));
+    }
+
+    parts.push(
+      <span key={`${match.index}-${match[0]}`} style={{ color: "#7dd3fc" }}>
+        {highlightXmlTag(match[0])}
+      </span>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < body.length) {
+    parts.push(body.slice(lastIndex));
+  }
+
+  return <>{parts}</>;
+}
+
+function highlightXmlTag(tag: string) {
+  const pieces: ReactNode[] = [];
+  const attrRegex = /(\s+[A-Za-z_:][-A-Za-z0-9_:.]*)(=)("[^"]*"|'[^']*')/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = attrRegex.exec(tag))) {
+    if (match.index > lastIndex) {
+      pieces.push(tag.slice(lastIndex, match.index));
+    }
+
+    pieces.push(
+      <span key={`${match.index}-${match[1]}`} style={{ color: "#fbbf24" }}>
+        {match[1]}
+      </span>
+    );
+    pieces.push(<span key={`${match.index}-eq`} style={{ color: "#94a3b8" }}>{match[2]}</span>);
+    pieces.push(
+      <span key={`${match.index}-${match[3]}`} style={{ color: "#86efac" }}>
+        {renderVariableTokens(match[3])}
+      </span>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < tag.length) {
+    pieces.push(tag.slice(lastIndex));
+  }
+
+  return <>{pieces}</>;
+}
+
+function renderVariableTokens(value: string) {
+  const parts: ReactNode[] = [];
+  const regex = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(value))) {
+    if (match.index > lastIndex) {
+      parts.push(value.slice(lastIndex, match.index));
+    }
+
+    parts.push(
+      <span key={`${match.index}-${match[0]}`} style={{ color: "#f0abfc", fontWeight: 700 }}>
+        {match[0]}
+      </span>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < value.length) {
+    parts.push(value.slice(lastIndex));
+  }
+
+  return <>{parts}</>;
 }
 
 function formatSize(sizeBytes: number): string {
