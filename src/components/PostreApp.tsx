@@ -80,9 +80,12 @@ const REQUEST_EDITOR_MIN_HEIGHT = 260;
 const COLLECTIONS_PANEL_MIN_WIDTH = 240;
 const COLLECTIONS_PANEL_MAX_WIDTH = 560;
 const COLLECTIONS_HANDLE_WIDTH = 10;
+const SIDEBAR_PANEL_MIN_HEIGHT = 220;
+const SIDEBAR_HANDLE_HEIGHT = 10;
 const THEME_STORAGE_KEY = "postre-theme";
 const TOKEN_PATTERN = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
 type Theme = "light" | "dark";
+type MainPanelMode = "request" | "environment";
 type VariableLookup = VariableLookupLike;
 type SelectionOffsets = { start: number; end: number };
 
@@ -541,9 +544,11 @@ export function PostreApp() {
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | null>(null);
   const [expandedCollections, setExpandedCollections] = useState<Record<string, boolean>>({});
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [collectionsPanelWidth, setCollectionsPanelWidth] = useState<number | null>(300);
+  const [collectionsPanelHeight, setCollectionsPanelHeight] = useState<number | null>(360);
   const [theme, setTheme] = useState<Theme>("light");
   const [themeReady, setThemeReady] = useState(false);
   const [draft, setDraft] = useState<RequestDraft | null>(null);
@@ -551,12 +556,16 @@ export function PostreApp() {
   const [responsePanelHeight, setResponsePanelHeight] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [showEnvironments, setShowEnvironments] = useState(false);
+  const [mainPanelMode, setMainPanelMode] = useState<MainPanelMode>("request");
+  const [showCollectionsPanel, setShowCollectionsPanel] = useState(true);
+  const [showEnvironmentsPanel, setShowEnvironmentsPanel] = useState(true);
   const [showImport, setShowImport] = useState(false);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [runnerTarget, setRunnerTarget] = useState<CollectionRunnerTarget | null>(null);
   const [runnerReport, setRunnerReport] = useState<ApiCollectionRunReport | null>(null);
   const collectionsSplitRef = useRef<HTMLDivElement | null>(null);
+  const sidebarSplitRef = useRef<HTMLDivElement | null>(null);
+  const didInitializeEnvironmentSelectionRef = useRef(false);
   const responseSplitRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<RequestDraft | null>(draft);
   draftRef.current = draft;
@@ -606,6 +615,24 @@ export function PostreApp() {
     }
   }, [selectedCollectionId, selectedRequestId]);
 
+  useEffect(() => {
+    if (!data) {
+      setSelectedEnvironmentId(null);
+      didInitializeEnvironmentSelectionRef.current = false;
+      return;
+    }
+
+    if (!didInitializeEnvironmentSelectionRef.current) {
+      didInitializeEnvironmentSelectionRef.current = true;
+      setSelectedEnvironmentId(data.activeEnvironmentId ?? data.environments[0]?.id ?? null);
+      return;
+    }
+
+    if (selectedEnvironmentId && data.environments.some((environment) => environment.id === selectedEnvironmentId)) {
+      return;
+    }
+  }, [data, selectedEnvironmentId]);
+
   function setCollectionExpanded(collectionId: string, expanded: boolean) {
     setExpandedCollections((current) => ({
       ...current,
@@ -618,6 +645,17 @@ export function PostreApp() {
       ...current,
       [folderId]: expanded
     }));
+  }
+
+  function focusRequestView() {
+    setMainPanelMode("request");
+    setShowCollectionsPanel(true);
+  }
+
+  function focusEnvironmentView(environmentId: string | null) {
+    setSelectedEnvironmentId(environmentId);
+    setMainPanelMode("environment");
+    setShowEnvironmentsPanel(true);
   }
 
   function expandFolderPath(folderId: string) {
@@ -733,6 +771,31 @@ export function PostreApp() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  useEffect(() => {
+    function handleResize() {
+      const container = sidebarSplitRef.current;
+      if (!container) {
+        return;
+      }
+
+      setCollectionsPanelHeight((current) => {
+        if (current === null) {
+          return current;
+        }
+
+        const rect = container.getBoundingClientRect();
+        const maxHeight = Math.max(
+          SIDEBAR_PANEL_MIN_HEIGHT,
+          rect.height - SIDEBAR_PANEL_MIN_HEIGHT - SIDEBAR_HANDLE_HEIGHT
+        );
+        return clamp(current, SIDEBAR_PANEL_MIN_HEIGHT, maxHeight);
+      });
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   const activeEnvironmentId = data?.activeEnvironmentId ?? null;
   async function createCollection() {
     const name = window.prompt("Collection name", "New Collection");
@@ -746,11 +809,32 @@ export function PostreApp() {
         method: "POST",
         body: JSON.stringify({ name })
       });
+      focusRequestView();
       setSelectedCollectionId(result.id);
       setSelectedFolderId(null);
       setCollectionExpanded(result.id, true);
       setNotice("Collection created.");
       await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createEnvironment() {
+    const name = window.prompt("Environment name", "New Environment");
+    if (name === null) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const result = await api<{ id: string }>("/api/environments", {
+        method: "POST",
+        body: JSON.stringify({ name })
+      });
+      setNotice("Environment created.");
+      await refresh();
+      focusEnvironmentView(result.id);
     } finally {
       setBusy(false);
     }
@@ -796,6 +880,7 @@ export function PostreApp() {
       method: "POST",
       body: JSON.stringify({ name, collectionId, parentId: selectedFolderId })
     });
+    focusRequestView();
     setSelectedFolderId(result.id);
     setCollectionExpanded(collectionId, true);
     if (selectedFolderId) {
@@ -852,6 +937,7 @@ export function PostreApp() {
       })
     });
 
+    focusRequestView();
     setSelectedRequestId(request.id);
     setDraft(cloneDraft(request));
     setCollectionExpanded(collectionId, true);
@@ -944,6 +1030,7 @@ export function PostreApp() {
   }
 
   function selectRequest(request: ApiRequest) {
+    focusRequestView();
     setSelectedRequestId(request.id);
     setSelectedCollectionId(request.collectionId);
     setSelectedFolderId(request.folderId ?? null);
@@ -955,7 +1042,12 @@ export function PostreApp() {
     setResponse(null);
   }
 
+  function selectEnvironment(environmentId: string | null) {
+    focusEnvironmentView(environmentId);
+  }
+
   function openHistory(entry: ApiHistoryEntry) {
+    focusRequestView();
     if (entry.requestId && data) {
       const request = findRequest(data.collections, entry.requestId);
       if (request) {
@@ -1062,6 +1154,44 @@ export function PostreApp() {
     window.addEventListener("pointercancel", cleanup, { once: true });
   }
 
+  function beginSidebarResize(event: React.PointerEvent<HTMLButtonElement>) {
+    const container = sidebarSplitRef.current;
+    if (!container) {
+      return;
+    }
+
+    event.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const minHeight = SIDEBAR_PANEL_MIN_HEIGHT;
+    const maxHeight = Math.max(minHeight, rect.height - SIDEBAR_PANEL_MIN_HEIGHT - SIDEBAR_HANDLE_HEIGHT);
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+
+    const updateHeight = (clientY: number) => {
+      const nextHeight = clamp(Math.round(clientY - rect.top), minHeight, maxHeight);
+      setCollectionsPanelHeight(nextHeight);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+    };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      updateHeight(moveEvent.clientY);
+    };
+
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "row-resize";
+    updateHeight(event.clientY);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", cleanup, { once: true });
+    window.addEventListener("pointercancel", cleanup, { once: true });
+  }
+
   const responseBody = useMemo(() => formatResponseBody(response), [response]);
   const selectedCollection = useMemo(
     () =>
@@ -1116,6 +1246,12 @@ export function PostreApp() {
           >
             {isDarkTheme ? <Sun size={16} /> : <Moon size={16} />}
           </button>
+          <IconButton
+            label={showCollectionsPanel ? "Hide collections" : "Show collections"}
+            onClick={() => setShowCollectionsPanel((current) => !current)}
+          >
+            <Folder size={17} />
+          </IconButton>
           <select
             className="h-9 min-w-44 rounded border border-slate-300 bg-white px-3 text-sm"
             value={activeEnvironmentId ?? ""}
@@ -1139,7 +1275,10 @@ export function PostreApp() {
           <IconButton label="Import" onClick={() => setShowImport(true)}>
             <Upload size={17} />
           </IconButton>
-          <IconButton label="Environments" onClick={() => setShowEnvironments(true)}>
+          <IconButton
+            label={showEnvironmentsPanel ? "Hide environments" : "Show environments"}
+            onClick={() => setShowEnvironmentsPanel((current) => !current)}
+          >
             <Settings size={17} />
           </IconButton>
         </div>
@@ -1149,133 +1288,239 @@ export function PostreApp() {
         <aside
           className="flex min-h-0 shrink-0 flex-col border-r border-slate-200 bg-white"
           style={{
-            width:
-              collectionsPanelWidth === null
-                ? "300px"
-                : `${collectionsPanelWidth}px`,
+            width: collectionsPanelWidth === null ? "300px" : `${collectionsPanelWidth}px`,
             minWidth: `${COLLECTIONS_PANEL_MIN_WIDTH}px`,
             maxWidth: `${COLLECTIONS_PANEL_MAX_WIDTH}px`
           }}
         >
-          <div className="flex h-12 items-center justify-between border-b border-slate-200 px-3">
-            <span className="text-sm font-semibold text-slate-700">Collections</span>
-            <div className="flex gap-1">
-              <IconButton label="New collection" onClick={createCollection}>
-                <Plus size={16} />
-              </IconButton>
-              <IconButton label="New folder" onClick={createFolder}>
-                <FolderPlus size={16} />
-              </IconButton>
-              <IconButton label="New request" onClick={createRequest}>
-                <FileText size={16} />
-              </IconButton>
-            </div>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-auto p-2">
-            {!data ? (
-              <LoadingBlock label="Loading collections" />
-            ) : data.collections.length === 0 ? (
-              <EmptyState title="No collections" actionLabel="Create collection" onAction={createCollection} />
-            ) : (
-              data.collections.map((collection) => (
-                <CollectionTree
-                  key={collection.id}
-                  collection={collection}
-                  selectedRequestId={selectedRequestId}
-                  selectedFolderId={selectedFolderId}
-                  expanded={expandedCollections[collection.id] ?? true}
-                  folderExpanded={expandedFolders}
-                  onSelectCollection={() => {
-                    setSelectedCollectionId(collection.id);
-                    setSelectedFolderId(null);
-                    setCollectionExpanded(collection.id, true);
-                  }}
-                  onSelectFolder={(folder) => {
-                    setSelectedCollectionId(folder.collectionId);
-                    setSelectedFolderId(folder.id);
-                    setCollectionExpanded(folder.collectionId, true);
-                    expandFolderPath(folder.id);
-                  }}
-                  onSelectRequest={selectRequest}
-                  onRenameCollection={renameCollection}
-                  onDeleteCollection={deleteCollection}
-                  onRenameFolder={renameFolder}
-                  onDeleteFolder={deleteFolder}
-                  onToggleCollection={(collection) =>
-                    setCollectionExpanded(collection.id, !(expandedCollections[collection.id] ?? true))
-                  }
-                  onToggleFolder={(folder) =>
-                    setFolderExpanded(folder.id, !(expandedFolders[folder.id] ?? true))
-                  }
-                  onRunCollection={(collection) =>
-                    setRunnerTarget({ type: "collection", id: collection.id, name: collection.name })
-                  }
-                  onRunFolder={(folder) =>
-                    setRunnerTarget({ type: "folder", id: folder.id, name: folder.name })
-                  }
-                />
-              ))
-            )}
-          </div>
-
-          <div className="border-t border-slate-200">
-            {showHistoryPanel ? (
-              <>
-                <div className="flex h-10 items-center justify-between gap-2 px-3 text-sm font-semibold text-slate-700">
-                  <div className="flex items-center gap-2">
-                    <History size={15} />
-                    History
+          <div ref={sidebarSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <section
+              className={`flex min-h-0 flex-col border-b border-slate-200 ${
+                showCollectionsPanel ? (showEnvironmentsPanel ? "" : "flex-1") : "shrink-0"
+              }`}
+              style={
+                showCollectionsPanel && showEnvironmentsPanel
+                  ? {
+                      height: collectionsPanelHeight === null ? "50%" : `${collectionsPanelHeight}px`
+                    }
+                  : undefined
+              }
+            >
+              <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200 px-3">
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  onClick={() => setShowCollectionsPanel((current) => !current)}
+                  aria-expanded={showCollectionsPanel}
+                  aria-label={showCollectionsPanel ? "Collapse collections panel" : "Expand collections panel"}
+                  title={showCollectionsPanel ? "Collapse collections panel" : "Expand collections panel"}
+                >
+                  <ChevronRight
+                    size={15}
+                    className={`shrink-0 transition-transform ${showCollectionsPanel ? "rotate-90" : ""}`}
+                  />
+                  <span className="truncate">Collections</span>
+                </button>
+                {showCollectionsPanel ? (
+                  <div className="flex gap-1">
+                    <IconButton label="New collection" onClick={createCollection}>
+                      <Plus size={16} />
+                    </IconButton>
+                    <IconButton label="New folder" onClick={createFolder}>
+                      <FolderPlus size={16} />
+                    </IconButton>
+                    <IconButton label="New request" onClick={createRequest}>
+                      <FileText size={16} />
+                    </IconButton>
                   </div>
-                  <button
-                    type="button"
-                    className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                    onClick={() => setShowHistoryPanel(false)}
-                    aria-label="Hide history panel"
-                    title="Hide history panel"
-                  >
-                    Hide
-                  </button>
-                </div>
-                <div className="max-h-52 overflow-auto px-2 pb-2">
-                  {data?.history.length ? (
-                    data.history.map((entry) => (
+                ) : null}
+              </div>
+
+              {showCollectionsPanel ? (
+                <>
+                  <div className="min-h-0 flex-1 overflow-auto p-2">
+                    {!data ? (
+                      <LoadingBlock label="Loading collections" />
+                    ) : data.collections.length === 0 ? (
+                      <EmptyState title="No collections" actionLabel="Create collection" onAction={createCollection} />
+                    ) : (
+                      data.collections.map((collection) => (
+                        <CollectionTree
+                          key={collection.id}
+                          collection={collection}
+                          selectedRequestId={selectedRequestId}
+                          selectedFolderId={selectedFolderId}
+                          expanded={expandedCollections[collection.id] ?? true}
+                          folderExpanded={expandedFolders}
+                          onSelectCollection={() => {
+                            focusRequestView();
+                            setSelectedCollectionId(collection.id);
+                            setSelectedFolderId(null);
+                            setCollectionExpanded(collection.id, true);
+                          }}
+                          onSelectFolder={(folder) => {
+                            focusRequestView();
+                            setSelectedCollectionId(folder.collectionId);
+                            setSelectedFolderId(folder.id);
+                            setCollectionExpanded(folder.collectionId, true);
+                            expandFolderPath(folder.id);
+                          }}
+                          onSelectRequest={selectRequest}
+                          onRenameCollection={renameCollection}
+                          onDeleteCollection={deleteCollection}
+                          onRenameFolder={renameFolder}
+                          onDeleteFolder={deleteFolder}
+                          onToggleCollection={(collection) =>
+                            setCollectionExpanded(collection.id, !(expandedCollections[collection.id] ?? true))
+                          }
+                          onToggleFolder={(folder) =>
+                            setFolderExpanded(folder.id, !(expandedFolders[folder.id] ?? true))
+                          }
+                          onRunCollection={(collection) =>
+                            setRunnerTarget({ type: "collection", id: collection.id, name: collection.name })
+                          }
+                          onRunFolder={(folder) =>
+                            setRunnerTarget({ type: "folder", id: folder.id, name: folder.name })
+                          }
+                        />
+                      ))
+                    )}
+                  </div>
+
+                  <div className="border-t border-slate-200">
+                    {showHistoryPanel ? (
+                      <>
+                        <div className="flex h-10 items-center justify-between gap-2 px-3 text-sm font-semibold text-slate-700">
+                          <div className="flex items-center gap-2">
+                            <History size={15} />
+                            History
+                          </div>
+                          <button
+                            type="button"
+                            className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                            onClick={() => setShowHistoryPanel(false)}
+                            aria-label="Hide history panel"
+                            title="Hide history panel"
+                          >
+                            Hide
+                          </button>
+                        </div>
+                        <div className="max-h-52 overflow-auto px-2 pb-2">
+                          {data?.history.length ? (
+                            data.history.map((entry) => (
+                              <button
+                                key={entry.id}
+                                className="mb-1 w-full rounded border border-transparent px-2 py-1.5 text-left text-xs hover:border-slate-200 hover:bg-slate-50"
+                                onClick={() => openHistory(entry)}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-semibold text-teal-700">{entry.method}</span>
+                                  <span className={entry.error ? "text-rose-600" : "text-slate-500"}>
+                                    {entry.error ? "ERR" : entry.status}
+                                  </span>
+                                </div>
+                                <div className="truncate text-slate-500">{entry.url}</div>
+                              </button>
+                            ))
+                          ) : (
+                            <p className="px-2 pb-3 text-xs text-slate-500">No requests sent yet.</p>
+                          )}
+                        </div>
+                      </>
+                    ) : (
                       <button
-                        key={entry.id}
-                        className="mb-1 w-full rounded border border-transparent px-2 py-1.5 text-left text-xs hover:border-slate-200 hover:bg-slate-50"
-                        onClick={() => openHistory(entry)}
+                        type="button"
+                        className="flex h-10 w-full items-center justify-between gap-2 px-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        onClick={() => setShowHistoryPanel(true)}
+                        aria-label="Show history panel"
+                        title="Show history panel"
+                      >
+                        <div className="flex items-center gap-2">
+                          <History size={15} />
+                          History
+                        </div>
+                        <span className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600">
+                          Show
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </section>
+
+              {showCollectionsPanel && showEnvironmentsPanel ? (
+                <button
+                  type="button"
+                  className="group relative z-10 -mt-px flex h-[10px] shrink-0 cursor-row-resize items-stretch justify-center border-y border-transparent bg-slate-100 hover:bg-teal-50 active:bg-teal-100"
+                  onPointerDown={beginSidebarResize}
+                  aria-label="Resize collections and environments panels"
+                  title="Drag to resize collections and environments panels"
+                >
+                  <span className="my-auto h-1 w-14 rounded-full bg-slate-300 transition group-hover:bg-teal-400" />
+                </button>
+              ) : null}
+
+            <section className={`flex min-h-0 flex-col ${showEnvironmentsPanel ? "flex-1" : "shrink-0"}`}>
+              <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200 px-3">
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  onClick={() => setShowEnvironmentsPanel((current) => !current)}
+                  aria-expanded={showEnvironmentsPanel}
+                  aria-label={showEnvironmentsPanel ? "Collapse environments panel" : "Expand environments panel"}
+                  title={showEnvironmentsPanel ? "Collapse environments panel" : "Expand environments panel"}
+                >
+                  <ChevronRight
+                    size={15}
+                    className={`shrink-0 transition-transform ${showEnvironmentsPanel ? "rotate-90" : ""}`}
+                  />
+                  <span className="truncate">Environments</span>
+                </button>
+                {showEnvironmentsPanel ? (
+                  <div className="flex gap-1">
+                    <IconButton label="New environment" onClick={createEnvironment}>
+                      <Plus size={16} />
+                    </IconButton>
+                  </div>
+                ) : null}
+              </div>
+
+              {showEnvironmentsPanel ? (
+                <div className="min-h-0 flex-1 overflow-auto p-2">
+                  {!data ? (
+                    <LoadingBlock label="Loading environments" />
+                  ) : data.environments.length === 0 ? (
+                    <EmptyState
+                      title="No environments"
+                      actionLabel="Create environment"
+                      onAction={createEnvironment}
+                    />
+                  ) : (
+                    data.environments.map((environment) => (
+                      <button
+                        key={environment.id}
+                        className={`mb-1 w-full rounded px-3 py-2 text-left text-sm ${
+                          selectedEnvironmentId === environment.id
+                            ? "bg-teal-50 font-semibold text-teal-800"
+                            : "hover:bg-slate-50"
+                        }`}
+                        onClick={() => selectEnvironment(environment.id)}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-semibold text-teal-700">{entry.method}</span>
-                          <span className={entry.error ? "text-rose-600" : "text-slate-500"}>
-                            {entry.error ? "ERR" : entry.status}
-                          </span>
+                          <span className="truncate">{environment.name}</span>
+                          {environment.active ? (
+                            <span className="rounded border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-700">
+                              active
+                            </span>
+                          ) : null}
                         </div>
-                        <div className="truncate text-slate-500">{entry.url}</div>
                       </button>
                     ))
-                  ) : (
-                    <p className="px-2 pb-3 text-xs text-slate-500">No requests sent yet.</p>
                   )}
                 </div>
-              </>
-            ) : (
-              <button
-                type="button"
-                className="flex h-10 w-full items-center justify-between gap-2 px-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                onClick={() => setShowHistoryPanel(true)}
-                aria-label="Show history panel"
-                title="Show history panel"
-              >
-                <div className="flex items-center gap-2">
-                  <History size={15} />
-                  History
-                </div>
-                <span className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600">
-                  Show
-                </span>
-              </button>
-            )}
+              ) : null}
+            </section>
           </div>
         </aside>
 
@@ -1283,49 +1528,68 @@ export function PostreApp() {
           type="button"
           className="group relative z-10 -ml-px flex w-[10px] shrink-0 cursor-col-resize items-stretch justify-center border-x border-transparent bg-slate-100 hover:bg-teal-50 active:bg-teal-100"
           onPointerDown={beginCollectionsResize}
-          aria-label="Resize collections panel"
-          title="Drag to resize collections panel"
+          aria-label="Resize sidebar"
+          title="Drag to resize sidebar"
         >
           <span className="my-auto h-14 w-1 rounded-full bg-slate-300 transition group-hover:bg-teal-400" />
         </button>
 
         <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]">
-          {draft ? (
-            <div ref={responseSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-hidden">
-                <RequestEditor
-                  draft={draft}
-                  busy={busy}
-                  variableLookup={variableLookup}
-                  onChange={setDraft}
-                  onSave={() => void saveDraft()}
-                  onSend={() => void sendRequest()}
-                  onDelete={() => void deleteRequest()}
-                />
+          <div className={mainPanelMode === "request" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}>
+            {draft ? (
+              <div ref={responseSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <RequestEditor
+                    draft={draft}
+                    busy={busy}
+                    variableLookup={variableLookup}
+                    onChange={setDraft}
+                    onSave={() => void saveDraft()}
+                    onSend={() => void sendRequest()}
+                    onDelete={() => void deleteRequest()}
+                  />
+                </div>
+                <button
+                  className="group flex h-3 shrink-0 items-center justify-center border-y border-slate-200 bg-[var(--surface-3)] transition hover:bg-teal-50 active:bg-teal-100"
+                  onPointerDown={beginResponseResize}
+                  type="button"
+                  aria-label="Resize response panel"
+                  title="Drag to resize response panel"
+                >
+                  <span className="h-1 w-14 rounded-full bg-slate-300 transition group-hover:bg-teal-400" />
+                </button>
+                <div
+                  className="min-h-0 flex-none"
+                  style={{
+                    height: responsePanelHeight === null ? "45%" : `${responsePanelHeight}px`
+                  }}
+                >
+                  <ResponsePanel response={response} body={responseBody} busy={busy} />
+                </div>
               </div>
-              <button
-                className="group flex h-3 shrink-0 items-center justify-center border-y border-slate-200 bg-[var(--surface-3)] transition hover:bg-teal-50 active:bg-teal-100"
-                onPointerDown={beginResponseResize}
-                type="button"
-                aria-label="Resize response panel"
-                title="Drag to resize response panel"
-              >
-                <span className="h-1 w-14 rounded-full bg-slate-300 transition group-hover:bg-teal-400" />
-              </button>
-              <div
-                className="min-h-0 flex-none"
-                style={{
-                  height: responsePanelHeight === null ? "45%" : `${responsePanelHeight}px`
-                }}
-              >
-                <ResponsePanel response={response} body={responseBody} busy={busy} />
+            ) : (
+              <div className="flex flex-1 items-center justify-center">
+                <EmptyState title="Select or create a request" actionLabel="New request" onAction={createRequest} />
               </div>
-            </div>
-          ) : (
-            <div className="flex flex-1 items-center justify-center">
-              <EmptyState title="Select or create a request" actionLabel="New request" onAction={createRequest} />
-            </div>
-          )}
+            )}
+          </div>
+
+          <div className={mainPanelMode === "environment" ? "flex min-h-0 flex-1 overflow-hidden" : "hidden"}>
+            {data ? (
+              <EnvironmentWorkspace
+                data={data}
+                selectedEnvironmentId={selectedEnvironmentId}
+                onSelectEnvironment={selectEnvironment}
+                onBackToRequests={focusRequestView}
+                onCreateEnvironment={createEnvironment}
+                onRefresh={refresh}
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center">
+                <LoadingBlock label="Loading environments" />
+              </div>
+            )}
+          </div>
         </section>
       </div>
 
@@ -1334,14 +1598,6 @@ export function PostreApp() {
           <button className="absolute inset-0" onClick={() => setNotice(null)} aria-label="Dismiss notice" />
           {notice}
         </div>
-      ) : null}
-
-      {showEnvironments && data ? (
-        <EnvironmentModal
-          data={data}
-          onClose={() => setShowEnvironments(false)}
-          onRefresh={refresh}
-        />
       ) : null}
 
       {showImport ? (
@@ -2413,48 +2669,45 @@ function CollectionRunReportView({ report }: { report: ApiCollectionRunReport })
   );
 }
 
-function EnvironmentModal({
+function EnvironmentWorkspace({
   data,
-  onClose,
+  selectedEnvironmentId,
+  onSelectEnvironment,
+  onBackToRequests,
+  onCreateEnvironment,
   onRefresh
 }: {
   data: AppData;
-  onClose: () => void;
+  selectedEnvironmentId: string | null;
+  onSelectEnvironment: (environmentId: string | null) => void;
+  onBackToRequests: () => void;
+  onCreateEnvironment: () => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
-  const [selectedEnvId, setSelectedEnvId] = useState(data.activeEnvironmentId ?? data.environments[0]?.id ?? "");
-  const selectedEnv = data.environments.find((environment) => environment.id === selectedEnvId) ?? null;
+  const selectedEnv = data.environments.find((environment) => environment.id === selectedEnvironmentId) ?? null;
   const [globalRows, setGlobalRows] = useState<VariableValue[]>(data.globalVariables);
   const [envRows, setEnvRows] = useState<VariableValue[]>(selectedEnv?.variables ?? []);
   const [envName, setEnvName] = useState(selectedEnv?.name ?? "");
 
   useEffect(() => {
-    const nextEnv = data.environments.find((environment) => environment.id === selectedEnvId) ?? null;
+    const nextEnv = data.environments.find((environment) => environment.id === selectedEnvironmentId) ?? null;
     setEnvRows(nextEnv?.variables ?? []);
     setEnvName(nextEnv?.name ?? "");
-  }, [data.environments, selectedEnvId]);
-
-  async function createEnvironment() {
-    const name = window.prompt("Environment name", "New Environment");
-    if (!name) {
-      return;
-    }
-
-    const result = await api<{ id: string }>("/api/environments", {
-      method: "POST",
-      body: JSON.stringify({ name })
-    });
-    setSelectedEnvId(result.id);
-    await onRefresh();
-  }
+  }, [data.environments, selectedEnvironmentId]);
 
   async function deleteEnvironment() {
     if (!selectedEnv || !window.confirm(`Delete environment "${selectedEnv.name}"?`)) {
       return;
     }
 
+    const remaining = data.environments.filter((environment) => environment.id !== selectedEnv.id);
+    const nextEnvironment = remaining.find((environment) => environment.active) ?? remaining[0] ?? null;
+
     await api(`/api/environments/${selectedEnv.id}`, { method: "DELETE" });
-    setSelectedEnvId("");
+    onSelectEnvironment(nextEnvironment?.id ?? null);
+    if (!nextEnvironment) {
+      onBackToRequests();
+    }
     await onRefresh();
   }
 
@@ -2490,42 +2743,71 @@ function EnvironmentModal({
   }
 
   return (
-    <Modal title="Environments" onClose={onClose}>
-      <div className="grid max-h-[78vh] min-h-[560px] grid-cols-[230px_minmax(520px,1fr)] gap-4 overflow-hidden">
-        <aside className="overflow-auto border-r border-slate-200 pr-3">
-          <button
-            className="mb-3 inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white"
-            onClick={createEnvironment}
-          >
-            <Plus size={15} />
-            New
-          </button>
-          {data.environments.map((environment) => (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]">
+      <div className="border-b border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-700">Environments</h2>
+            <p className="text-xs text-slate-500">Manage global and scoped variables.</p>
+          </div>
+          <div className="flex items-center gap-2">
             <button
-              key={environment.id}
-              className={`mb-1 w-full rounded px-3 py-2 text-left text-sm ${
-                selectedEnvId === environment.id ? "bg-teal-50 font-semibold text-teal-800" : "hover:bg-slate-50"
-              }`}
-              onClick={() => setSelectedEnvId(environment.id)}
+              className="inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              onClick={onBackToRequests}
+              type="button"
             >
-              {environment.name}
-              {environment.active ? <span className="ml-2 text-xs text-slate-500">active</span> : null}
+              <ChevronLeft size={15} />
+              Back to requests
             </button>
-          ))}
-        </aside>
-        <div className="min-h-0 overflow-auto pr-1">
+            <button
+              className="inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
+              onClick={() => void onCreateEnvironment()}
+              type="button"
+            >
+              <Plus size={15} />
+              New environment
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <select
+            className="h-9 min-w-64 rounded border border-slate-300 bg-white px-3 text-sm font-semibold"
+            value={selectedEnvironmentId ?? ""}
+            onChange={(event) => onSelectEnvironment(event.target.value || null)}
+            aria-label="Selected environment"
+          >
+            {data.environments.map((environment) => (
+              <option key={environment.id} value={environment.id}>
+                {environment.name}
+              </option>
+            ))}
+          </select>
+          <button
+            className="inline-flex h-9 items-center gap-2 rounded border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={deleteEnvironment}
+            disabled={!selectedEnv}
+            type="button"
+          >
+            <Trash2 size={15} />
+            Delete
+          </button>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="grid gap-4">
           <EditorSection title="Global Variables">
             <VariableTable rows={globalRows} onChange={setGlobalRows} />
             <button
               className="mt-3 inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold hover:bg-slate-50"
               onClick={saveGlobals}
+              type="button"
             >
               <Save size={15} />
               Save globals
             </button>
           </EditorSection>
-
-          <div className="h-4" />
 
           <EditorSection title="Environment Variables">
             {selectedEnv ? (
@@ -2536,30 +2818,34 @@ function EnvironmentModal({
                     value={envName}
                     onChange={(event) => setEnvName(event.target.value)}
                   />
-                  <button
-                    className="inline-flex h-9 items-center gap-2 rounded border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50"
-                    onClick={deleteEnvironment}
-                  >
-                    <Trash2 size={15} />
-                    Delete
-                  </button>
                 </div>
                 <VariableTable rows={envRows} onChange={setEnvRows} />
                 <button
                   className="mt-3 inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
                   onClick={saveEnvironment}
+                  type="button"
                 >
                   <Save size={15} />
                   Save environment
                 </button>
               </>
             ) : (
-              <p className="text-sm text-slate-500">Create an environment to manage scoped variables.</p>
+              <div className="grid gap-3">
+                <p className="text-sm text-slate-500">Create an environment to manage scoped variables.</p>
+                <button
+                  className="inline-flex h-9 w-fit items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
+                  onClick={() => void onCreateEnvironment()}
+                  type="button"
+                >
+                  <Plus size={15} />
+                  Create environment
+                </button>
+              </div>
             )}
           </EditorSection>
         </div>
       </div>
-    </Modal>
+    </div>
   );
 }
 
