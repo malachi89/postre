@@ -656,6 +656,7 @@ export function PostreApp() {
   const responseSplitRef = useRef<HTMLDivElement | null>(null);
   const requestTabsRef = useRef<OpenRequestTab[]>(requestTabs);
   const activeRequestTabIdRef = useRef<string | null>(activeRequestTabId);
+  const activeRequestControllerRef = useRef<AbortController | null>(null);
   const didInitializeRequestTabsRef = useRef(false);
   requestTabsRef.current = requestTabs;
   activeRequestTabIdRef.current = activeRequestTabId;
@@ -1545,6 +1546,18 @@ export function PostreApp() {
       return;
     }
 
+    let sendUrl = tab.draft.url.trim();
+    if (sendUrl && !sendUrl.startsWith("http://") && !sendUrl.startsWith("https://")) {
+      sendUrl = `https://${sendUrl}`;
+      updateRequestTab(tab.tabId, (current) => ({
+        ...current,
+        draft: { ...current.draft, url: sendUrl }
+      }));
+    }
+
+    const controller = new AbortController();
+    activeRequestControllerRef.current = controller;
+
     updateRequestTab(tab.tabId, (current) => ({ ...current, busy: true, response: null }));
     try {
       const savedDraft = await saveRequestTab(tab.tabId, false);
@@ -1552,16 +1565,36 @@ export function PostreApp() {
       const result = await api<SendResponseState>("/api/send", {
         method: "POST",
         body: JSON.stringify({
-          draft: sendDraft,
+          draft: { ...sendDraft, url: sendUrl || sendDraft.url },
           activeEnvironmentId
         }),
-        allowError: true
+        allowError: true,
+        signal: controller.signal
       });
       updateRequestTab(tab.tabId, (current) => ({ ...current, response: result }));
       await refresh({ reconcileTabs: false });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        updateRequestTab(tab.tabId, (current) => ({
+          ...current,
+          response: { error: "Request cancelled" }
+        }));
+      } else {
+        const errorMessage = error instanceof Error ? error.message : "Request failed";
+        const friendlyMessage = categorizeError(errorMessage);
+        updateRequestTab(tab.tabId, (current) => ({
+          ...current,
+          response: { error: friendlyMessage }
+        }));
+      }
     } finally {
       updateRequestTab(tab.tabId, (current) => ({ ...current, busy: false }));
+      activeRequestControllerRef.current = null;
     }
+  }
+
+  function cancelRequest() {
+    activeRequestControllerRef.current?.abort();
   }
 
   async function saveDraftIfInsideTarget(target: CollectionRunnerTarget) {
@@ -1904,6 +1937,34 @@ export function PostreApp() {
 
               {showCollectionsPanel ? (
                 <>
+                  <div className="flex shrink-0 items-center justify-end gap-1 border-b border-slate-200 px-3 py-1">
+                    <button
+                      type="button"
+                      className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-slate-500 hover:bg-slate-100"
+                      onClick={() => {
+                        if (!data) return;
+                        const allCollapsed = data.collections.every((c) => !(expandedCollections[c.id] ?? true));
+                        const newValue = !allCollapsed;
+                        const allExpanded: Record<string, boolean> = {};
+                        function visitFolders(folders: ApiFolder[]) {
+                          for (const f of folders) {
+                            allExpanded[f.id] = newValue;
+                            visitFolders(f.children);
+                          }
+                        }
+                        for (const c of data.collections) {
+                          allExpanded[c.id] = newValue;
+                          visitFolders(c.folders);
+                        }
+                        setExpandedCollections(allExpanded);
+                        setExpandedFolders(allExpanded);
+                      }}
+                      title="Toggle collapse all"
+                    >
+                      <ChevronUp size={12} className="inline" />
+                      <ChevronDown size={12} className="inline" />
+                    </button>
+                  </div>
                   <div className="min-h-0 flex-1 overflow-auto p-2">
                     {!data ? (
                       <LoadingBlock label="Loading collections" />
@@ -2116,6 +2177,7 @@ export function PostreApp() {
                     onChange={updateActiveDraft}
                     onSave={() => void saveDraft()}
                     onSend={() => void sendRequest()}
+                    onCancel={() => cancelRequest()}
                     onDelete={() => void deleteRequest()}
                   />
                 </div>
@@ -2410,7 +2472,7 @@ function RequestTabStrip({
                 onClick={() => onSelectTab(tab.tabId)}
                 title={`${tab.draft.method} ${tab.draft.name}`}
               >
-                <span className={`shrink-0 text-xs font-semibold ${active ? "text-teal-700" : "text-slate-500"}`}>
+                <span className={`shrink-0 text-xs font-semibold ${active ? "text-teal-700" : methodColor(tab.draft.method)}`}>
                   {tab.draft.method}
                 </span>
                 <span className="truncate font-medium">{tab.draft.name || "Untitled request"}</span>
@@ -2722,6 +2784,7 @@ function RequestEditor({
   onChange,
   onSave,
   onSend,
+  onCancel,
   onDelete
 }: {
   draft: RequestDraft;
@@ -2730,6 +2793,7 @@ function RequestEditor({
   onChange: (draft: RequestDraft) => void;
   onSave: () => void;
   onSend: () => void;
+  onCancel?: () => void;
   onDelete: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<RequestTab | null>("body");
@@ -2852,7 +2916,7 @@ function RequestEditor({
               </option>
             ))}
           </select>
-          <div className="min-w-0 flex-1">
+          <div className="relative min-w-0 flex-1">
             <TokenizedField
               className="min-h-[2.75rem] py-2.5 leading-6"
               value={draft.url}
@@ -2861,15 +2925,32 @@ function RequestEditor({
               aria-label="Request URL"
               variableLookup={variableLookup}
             />
+            {draft.url.trim() && !draft.url.startsWith("http://") && !draft.url.startsWith("https://") && !draft.url.includes("{{") ? (
+              <span className="absolute -bottom-4 left-0 text-[10px] text-amber-600">
+                No protocol — will prepend https://
+              </span>
+            ) : null}
           </div>
-          <button
-            className="inline-flex h-11 items-center gap-2 rounded bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
-            onClick={onSend}
-            disabled={busy || !draft.url.trim()}
-          >
-            {busy ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />}
-            Send
-          </button>
+          {busy ? (
+            <button
+              className="inline-flex h-11 items-center gap-2 rounded border border-rose-300 bg-white px-4 text-sm font-semibold text-rose-700 hover:bg-rose-50"
+              onClick={onCancel}
+              type="button"
+            >
+              <X size={17} />
+              Cancel
+            </button>
+          ) : (
+            <button
+              className="inline-flex h-11 items-center gap-2 rounded bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={onSend}
+              disabled={!draft.url.trim()}
+              type="button"
+            >
+              <Send size={17} />
+              Send
+            </button>
+          )}
         </div>
       </div>
 
@@ -2912,9 +2993,28 @@ function RequestEditor({
 
                 {activeTab === "body" ? (
                   <section className="rounded border border-slate-200 bg-white p-3 shadow-panel">
-                      <h2 className="mb-3 text-sm font-semibold text-slate-700">Body</h2>
+                    <div className="mb-3 flex items-center justify-between">
+                      <h2 className="text-sm font-semibold text-slate-700">Body</h2>
+                      {draft.bodyMode === "raw_json" && draft.bodyRaw.trim() ? (
+                        <button
+                          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100"
+                          onClick={() => {
+                            try {
+                              const formatted = JSON.stringify(JSON.parse(draft.bodyRaw), null, 2);
+                              onChange({ ...draft, bodyRaw: formatted });
+                            } catch {
+                              // ignore invalid JSON
+                            }
+                          }}
+                          type="button"
+                        >
+                          <FileJson size={14} />
+                          Format JSON
+                        </button>
+                      ) : null}
+                    </div>
                     <div className="mb-3 flex flex-wrap items-center gap-3">
-                      {(["none", "raw_json", "raw_text"] as const).map((mode) => (
+                      {(["none", "raw_json", "raw_text", "form_urlencoded", "multipart"] as const).map((mode) => (
                         <label key={mode} className="flex cursor-pointer items-center gap-1.5 text-sm">
                           <input
                             type="radio"
@@ -2923,7 +3023,7 @@ function RequestEditor({
                             checked={draft.bodyMode === mode}
                             onChange={() => onChange({ ...draft, bodyMode: mode })}
                           />
-                          {mode === "none" ? "none" : mode === "raw_json" ? "raw JSON" : "raw text"}
+                          {mode === "none" ? "none" : mode === "raw_json" ? "raw JSON" : mode === "raw_text" ? "raw text" : mode === "form_urlencoded" ? "URL-encoded" : "multipart"}
                         </label>
                       ))}
                     </div>
@@ -3624,7 +3724,7 @@ function RequestTreeItem({
           onDragEnd={onDragEnd}
         >
           <FileText size={14} className={selected ? "text-white" : "text-slate-500"} />
-          <span className={selected ? "text-white" : "font-semibold text-teal-700"}>{request.method}</span>
+          <span className={`font-semibold ${selected ? "text-white" : methodColor(request.method)}`}>{request.method}</span>
           <span className="truncate">{request.name}</span>
         </button>
       )}
@@ -3856,7 +3956,7 @@ function CollectionRunnerModal({
                       />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-teal-700">{request.method}</span>
+                          <span className={`text-xs font-semibold ${methodColor(request.method)}`}>{request.method}</span>
                           <span className="truncate text-sm font-medium text-slate-800">{request.name}</span>
                         </div>
                         <div className="truncate text-xs text-slate-500">
@@ -3933,7 +4033,7 @@ function CollectionRunReportView({ report }: { report: ApiCollectionRunReport })
                 <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
                   <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
                   <span>{step.sequence}. {step.requestName}</span>
-                  <span className="rounded-full bg-white px-2 py-0.5 text-xs text-teal-700">{step.method}</span>
+                  <span className={`rounded-full bg-white px-2 py-0.5 text-xs ${methodColor(step.method)}`}>{step.method}</span>
                   <span className={`rounded-full px-2 py-0.5 text-xs ${step.error ? "bg-rose-100 text-rose-700" : "bg-teal-100 text-teal-700"}`}>
                     {step.error ? "error" : step.status ?? "ok"}
                   </span>
@@ -4361,6 +4461,9 @@ function ImportModal({
 function SuccessResponse({ response, body }: { response: SendSuccessResponseState; body: string }) {
   const [bodyViewMode, setBodyViewMode] = useState<BodyViewMode>("pretty");
   const [copied, setCopied] = useState(false);
+  const [bodySearch, setBodySearch] = useState("");
+  const [bodySearchMatch, setBodySearchMatch] = useState(0);
+  const bodyRef = useRef<HTMLPreElement | null>(null);
 
   async function copyBody() {
     try {
@@ -4372,11 +4475,61 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
     }
   }
 
+  async function downloadBody() {
+    try {
+      const blob = new Blob([body], { type: response.contentType || "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `response.${response.contentType.includes("json") ? "json" : "txt"}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    }
+  }
+
+  const bodySearchResults = useMemo(() => {
+    if (!bodySearch.trim()) return [];
+    const lowerBody = body.toLowerCase();
+    const lowerQuery = bodySearch.toLowerCase();
+    const indices: number[] = [];
+    let idx = 0;
+    while (true) {
+      const found = lowerBody.indexOf(lowerQuery, idx);
+      if (found === -1) break;
+      indices.push(found);
+      idx = found + 1;
+    }
+    return indices;
+  }, [body, bodySearch]);
+
+  const currentBodySearchMatch = clamp(bodySearchMatch, 0, Math.max(bodySearchResults.length - 1, 0));
+
+  useEffect(() => {
+    if (!bodyRef.current || bodySearchResults.length === 0) return;
+    const matchIndex = bodySearchResults[currentBodySearchMatch];
+    if (matchIndex === undefined) return;
+    const pre = bodyRef.current;
+    const textNode = pre.firstChild;
+    if (!textNode) return;
+    const range = document.createRange();
+    range.setStart(textNode, matchIndex);
+    range.setEnd(textNode, matchIndex + bodySearch.length);
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }, [currentBodySearchMatch, bodySearchResults, bodySearch.length]);
+
   return (
     <div className="grid gap-4">
       <ScriptResultsPanel results={response.scriptResults ?? []} />
       <EditorSection title="Response Body">
-        <div className="mb-3 flex items-center gap-2">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
             {(["pretty", "edit"] as const).map((mode) => {
               const active = bodyViewMode === mode;
@@ -4397,6 +4550,40 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
               );
             })}
           </div>
+          <input
+            type="text"
+            className="h-7 w-40 rounded border border-slate-300 px-2 text-xs font-mono outline-none focus:border-teal-500"
+            placeholder="Search in body..."
+            value={bodySearch}
+            onChange={(event) => { setBodySearch(event.target.value); setBodySearchMatch(0); }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                if (event.shiftKey) {
+                  setBodySearchMatch((current) => Math.max(current - 1, 0));
+                } else {
+                  setBodySearchMatch((current) => Math.min(current + 1, Math.max(bodySearchResults.length - 1, 0)));
+                }
+              }
+            }}
+            aria-label="Search in response body"
+          />
+          {bodySearch.trim() ? (
+            <span className="text-xs text-slate-500">
+              {bodySearchResults.length > 0
+                ? `${currentBodySearchMatch + 1}/${bodySearchResults.length}`
+                : "No matches"}
+            </span>
+          ) : null}
+          <button
+            className="inline-flex items-center gap-1 rounded px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+            onClick={downloadBody}
+            type="button"
+            title="Download response body"
+          >
+            <Download size={14} />
+            Download
+          </button>
           <button
             className="ml-auto inline-flex items-center gap-1 rounded px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
             onClick={copyBody}
@@ -4408,7 +4595,7 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
         {bodyViewMode === "pretty" ? (
           <PrettyBody body={body} contentType={response.contentType} />
         ) : (
-          <pre className="max-h-[560px] overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+          <pre ref={bodyRef} className="max-h-[560px] overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
             {body}
           </pre>
         )}
@@ -4450,11 +4637,7 @@ function ResponsePanel({
           ) : (
             <SuccessResponse response={response} body={body} />
           )
-        ) : (
-          <p className="text-sm text-slate-500">
-            Send a request to see status, headers, timing, size, and body here.
-          </p>
-        )}
+        ) : null}
       </div>
       {responseSummary && showHeadersModal ? (
         <ResponseHeadersModal headers={responseSummary.headers} onClose={() => setShowHeadersModal(false)} />
@@ -4541,7 +4724,10 @@ function ResponseSummary({
   return (
     <div className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap">
       <div className="inline-flex items-center gap-2 text-xs text-slate-600">
-        <SummaryChip label="Status" value={`${response.status} ${response.statusText}`} tone="teal" />
+        <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 ${statusColor(response.status)}`}>
+          <span className="uppercase tracking-wide text-[10px] font-medium">Status</span>
+          <span className="max-w-[14rem] truncate font-semibold">{response.status} {response.statusText}</span>
+        </span>
         <SummaryChip label="Time" value={`${response.durationMs} ms`} tone="amber" />
         <SummaryChip label="Size" value={formatSize(response.sizeBytes)} />
         <SummaryChip label="Type" value={response.contentType || "unknown"} />
@@ -4565,20 +4751,45 @@ function ResponseHeadersModal({
   headers: KeyValueRow[];
   onClose: () => void;
 }) {
+  const [rawView, setRawView] = useState(false);
+
   return (
     <Modal title={`Response Headers (${headers.length})`} onClose={onClose}>
-      {headers.length ? (
-        <div className="grid max-h-[65vh] gap-2 overflow-auto text-sm">
-          {headers.map((header) => (
-            <div
-              key={`${header.key}-${header.value}`}
-              className="grid gap-1 rounded border border-slate-200 bg-slate-50 p-3 md:grid-cols-[180px_1fr] md:gap-3"
-            >
-              <span className="font-semibold text-slate-700">{header.key}</span>
-              <span className="break-all font-mono text-xs text-slate-700 md:text-sm">{header.value}</span>
-            </div>
-          ))}
+      <div className="mb-3 flex items-center gap-2">
+        <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
+          {([false, true] as const).map((raw) => {
+            const active = rawView === raw;
+            return (
+              <button
+                key={String(raw)}
+                className={`rounded px-3 py-1.5 text-xs font-semibold transition ${active ? "bg-white text-teal-700 shadow-sm" : "text-slate-600 hover:bg-white/70"}`}
+                onClick={() => setRawView(raw)}
+                type="button"
+              >
+                {raw ? "Raw" : "Preview"}
+              </button>
+            );
+          })}
         </div>
+      </div>
+      {headers.length ? (
+        rawView ? (
+          <pre className="max-h-[65vh] overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+            {headers.map((header) => `${header.key}: ${header.value}`).join("\n")}
+          </pre>
+        ) : (
+          <div className="grid max-h-[65vh] gap-2 overflow-auto text-sm">
+            {headers.map((header) => (
+              <div
+                key={`${header.key}-${header.value}`}
+                className="grid gap-1 rounded border border-slate-200 bg-slate-50 p-3 md:grid-cols-[180px_1fr] md:gap-3"
+              >
+                <span className="font-semibold text-slate-700">{header.key}</span>
+                <span className="break-all font-mono text-xs text-slate-700 md:text-sm">{header.value}</span>
+              </div>
+            ))}
+          </div>
+        )
       ) : (
         <div className="text-sm text-slate-500">No headers returned.</div>
       )}
@@ -5616,14 +5827,58 @@ function formatDateTime(value: string): string {
   return date.toLocaleString();
 }
 
+function methodColor(method: string): string {
+  switch (method) {
+    case "GET": return "text-blue-600";
+    case "POST": return "text-green-600";
+    case "PUT": return "text-orange-600";
+    case "PATCH": return "text-purple-600";
+    case "DELETE": return "text-rose-600";
+    case "HEAD": return "text-slate-600";
+    case "OPTIONS": return "text-cyan-600";
+    default: return "text-slate-600";
+  }
+}
+
+function statusColor(status: number): string {
+  if (status >= 200 && status < 300) return "text-green-600 border-green-200 bg-green-50";
+  if (status >= 300 && status < 400) return "text-blue-600 border-blue-200 bg-blue-50";
+  if (status >= 400 && status < 500) return "text-amber-600 border-amber-200 bg-amber-50";
+  if (status >= 500) return "text-rose-600 border-rose-200 bg-rose-50";
+  return "text-slate-600 border-slate-200 bg-slate-50";
+}
+
+function categorizeError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("econnreset")) {
+    return "Connection refused — Is the server running?";
+  }
+  if (lower.includes("etimedout") || lower.includes("timeout") || lower.includes("timed out")) {
+    return "Request timed out — The server did not respond in time.";
+  }
+  if (lower.includes("dns") || lower.includes("enotfound")) {
+    return "DNS lookup failed — Could not resolve the hostname.";
+  }
+  if (lower.includes("abort") || lower.includes("cancel")) {
+    return "Request was cancelled.";
+  }
+  if (lower.includes("fetch") || lower.includes("network") || lower.includes("cors")) {
+    return "Network error — Check the URL or CORS configuration.";
+  }
+  return message;
+}
+
 async function api<T = unknown>(
   url: string,
   options: RequestInit & { allowError?: boolean } = {}
 ): Promise<T> {
+  const method = (options.method ?? "GET").toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+
   const response = await fetch(url, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
       ...(options.headers ?? {})
     }
   });

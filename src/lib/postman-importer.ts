@@ -438,10 +438,16 @@ function normalizeBody(
   }
 
   if (mode === "urlencoded") {
-    warnings.push(`Request "${itemName}" uses x-www-form-urlencoded; values were preserved but editor support is limited.`);
+    const form = new URLSearchParams();
+    for (const entry of asArray(body.urlencoded)) {
+      const record = asRecord(entry) ?? {};
+      if (record.disabled !== true) {
+        form.append(stringValue(record.key), stringValue(record.value));
+      }
+    }
     return {
       bodyMode: "form_urlencoded",
-      bodyRaw: JSON.stringify(body.urlencoded ?? [], null, 2)
+      bodyRaw: form.toString()
     };
   }
 

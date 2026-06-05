@@ -163,7 +163,18 @@ function parseBodyEntries(raw: string): { key: string; value: string; type: stri
   } catch {
     // ignore parse errors
   }
-  return [];
+
+  try {
+    const params = new URLSearchParams(raw);
+    return [...params.entries()].map(([key, value]) => ({
+      key,
+      value,
+      type: "text",
+      enabled: true
+    }));
+  } catch {
+    return [];
+  }
 }
 
 function authToPostman(auth: { type: string; token?: string; username?: string; password?: string; key?: string; value?: string; placement?: string }): unknown {

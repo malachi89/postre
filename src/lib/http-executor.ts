@@ -166,13 +166,7 @@ function buildBody(draft: RequestDraft, _headers: Headers): BodyInit | undefined
   }
 
   if (draft.bodyMode === "form_urlencoded") {
-    const form = new URLSearchParams();
-    for (const row of draft.queryParams) {
-      if (row.enabled && row.key.trim()) {
-        form.set(row.key.trim(), row.value);
-      }
-    }
-    return form;
+    return new URLSearchParams(draft.bodyRaw);
   }
 
   return undefined;
