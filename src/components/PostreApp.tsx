@@ -12,7 +12,6 @@ import {
   FileText,
   Folder,
   FolderPlus,
-  History,
   Loader2,
   Moon,
   Pencil,
@@ -31,7 +30,6 @@ import type {
   ApiCollection,
   ApiCollectionRunReport,
   ApiFolder,
-  ApiHistoryEntry,
   ApiRequest,
   AppData,
   AuthConfig,
@@ -69,6 +67,7 @@ type SendErrorResponseState = {
 
 type SendResponseState = SendSuccessResponseState | SendErrorResponseState;
 type CollectionRunnerTarget = { type: "collection" | "folder"; id: string; name: string };
+type RequestTreeDropTarget = { requestId: string; collectionId: string; folderId: string | null };
 type BodyViewMode = "edit" | "pretty";
 type BodyFormat = "json" | "xml" | "text";
 
@@ -86,6 +85,7 @@ const COLLECTIONS_HANDLE_WIDTH = 10;
 const SIDEBAR_PANEL_MIN_HEIGHT = 220;
 const SIDEBAR_HANDLE_HEIGHT = 10;
 const THEME_STORAGE_KEY = "postre-theme";
+const REQUEST_DRAG_DATA_TYPE = "application/x-postre-request-id";
 const TOKEN_PATTERN = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
 type Theme = "light" | "dark";
 type MainPanelMode = "request" | "environment";
@@ -94,6 +94,14 @@ type SelectionOffsets = { start: number; end: number };
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function getDraggedRequestId(event: Pick<React.DragEvent, "dataTransfer">) {
+  return event.dataTransfer.getData(REQUEST_DRAG_DATA_TYPE) || event.dataTransfer.getData("text/plain");
+}
+
+function hasDraggedRequestType(event: Pick<React.DragEvent, "dataTransfer">) {
+  return Array.from(event.dataTransfer.types).includes(REQUEST_DRAG_DATA_TYPE);
 }
 
 function readPreferredTheme(): Theme {
@@ -563,9 +571,11 @@ export function PostreApp() {
   const [showCollectionsPanel, setShowCollectionsPanel] = useState(true);
   const [showEnvironmentsPanel, setShowEnvironmentsPanel] = useState(true);
   const [showImport, setShowImport] = useState(false);
-  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [runnerTarget, setRunnerTarget] = useState<CollectionRunnerTarget | null>(null);
   const [runnerReport, setRunnerReport] = useState<ApiCollectionRunReport | null>(null);
+  const [draggedRequestId, setDraggedRequestId] = useState<string | null>(null);
+  const [dropTargetCollectionId, setDropTargetCollectionId] = useState<string | null>(null);
+  const [dropTargetFolderId, setDropTargetFolderId] = useState<string | null>(null);
   const collectionsSplitRef = useRef<HTMLDivElement | null>(null);
   const sidebarSplitRef = useRef<HTMLDivElement | null>(null);
   const didInitializeEnvironmentSelectionRef = useRef(false);
@@ -679,6 +689,52 @@ export function PostreApp() {
       }
       return next;
     });
+  }
+
+  function clearRequestDragState() {
+    setDraggedRequestId(null);
+    setDropTargetCollectionId(null);
+    setDropTargetFolderId(null);
+  }
+
+  async function moveRequestToTreeTarget(target: RequestTreeDropTarget) {
+    if (!data) {
+      return;
+    }
+
+    const request = findRequest(data.collections, target.requestId);
+    const collection = data.collections.find((item) => item.id === target.collectionId);
+    const folder = target.folderId ? findFolder(data.collections, target.folderId) : null;
+    if (
+      !request ||
+      !collection ||
+      (target.folderId && !folder) ||
+      (request.collectionId === target.collectionId && (request.folderId ?? null) === target.folderId)
+    ) {
+      return;
+    }
+
+    const movedRequest = await api<ApiRequest>(`/api/requests/${request.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        ...cloneDraft(request),
+        collectionId: collection.id,
+        folderId: target.folderId
+      })
+    });
+
+    setSelectedRequestId(movedRequest.id);
+    setSelectedCollectionId(collection.id);
+    setSelectedFolderId(target.folderId);
+    setCollectionExpanded(collection.id, true);
+    if (target.folderId) {
+      expandFolderPath(target.folderId);
+    }
+    if (draft?.id === movedRequest.id) {
+      setDraft(cloneDraft(movedRequest));
+    }
+    setNotice(`Request moved to "${folder?.name ?? collection.name}".`);
+    await refresh();
   }
 
   useEffect(() => {
@@ -1049,32 +1105,6 @@ export function PostreApp() {
     focusEnvironmentView(environmentId);
   }
 
-  function openHistory(entry: ApiHistoryEntry) {
-    focusRequestView();
-    if (entry.requestId && data) {
-      const request = findRequest(data.collections, entry.requestId);
-      if (request) {
-        selectRequest(request);
-        return;
-      }
-    }
-
-    setDraft({
-      name: "History Request",
-      method: entry.method,
-      url: entry.url,
-      headers: [],
-      queryParams: [],
-      bodyMode: "none",
-      bodyRaw: "",
-      preRequestScript: "",
-      postRequestScript: "",
-      auth: EMPTY_AUTH
-    });
-    setSelectedRequestId(null);
-    setResponse(null);
-  }
-
   function beginResponseResize(event: React.PointerEvent<HTMLButtonElement>) {
     const container = responseSplitRef.current;
     if (!container) {
@@ -1385,67 +1415,61 @@ export function PostreApp() {
                           onRunFolder={(folder) =>
                             setRunnerTarget({ type: "folder", id: folder.id, name: folder.name })
                           }
+                          draggedRequestId={draggedRequestId}
+                          dropTargetCollectionId={dropTargetCollectionId}
+                          dropTargetFolderId={dropTargetFolderId}
+                          onRequestDragStart={(request) => {
+                            setDraggedRequestId(request.id);
+                            setDropTargetCollectionId(null);
+                            setDropTargetFolderId(null);
+                          }}
+                          onRequestDragEnd={clearRequestDragState}
+                          onCollectionDragOver={(collection, requestId) => {
+                            if (!requestId) {
+                              return;
+                            }
+                            setDropTargetCollectionId(collection.id);
+                            setDropTargetFolderId(null);
+                          }}
+                          onCollectionDragLeave={(collection) => {
+                            setDropTargetCollectionId((current) => (current === collection.id ? null : current));
+                          }}
+                          onCollectionDrop={(collection, requestId) => {
+                            if (!requestId) {
+                              return;
+                            }
+                            void moveRequestToTreeTarget({
+                              requestId,
+                              collectionId: collection.id,
+                              folderId: null
+                            }).finally(() => {
+                              clearRequestDragState();
+                            });
+                          }}
+                          onFolderDragOver={(folder, requestId) => {
+                            if (!requestId) {
+                              return;
+                            }
+                            setDropTargetCollectionId(null);
+                            setDropTargetFolderId(folder.id);
+                          }}
+                          onFolderDragLeave={(folder) => {
+                            setDropTargetFolderId((current) => (current === folder.id ? null : current));
+                          }}
+                          onFolderDrop={(folder, requestId) => {
+                            if (!requestId) {
+                              return;
+                            }
+                            void moveRequestToTreeTarget({
+                              requestId,
+                              collectionId: folder.collectionId,
+                              folderId: folder.id
+                            }).finally(() => {
+                              clearRequestDragState();
+                            });
+                          }}
                         />
                       ))
-                    )}
-                  </div>
-
-                  <div className="border-t border-slate-200">
-                    {showHistoryPanel ? (
-                      <>
-                        <div className="flex h-10 items-center justify-between gap-2 px-3 text-sm font-semibold text-slate-700">
-                          <div className="flex items-center gap-2">
-                            <History size={15} />
-                            History
-                          </div>
-                          <button
-                            type="button"
-                            className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                            onClick={() => setShowHistoryPanel(false)}
-                            aria-label="Hide history panel"
-                            title="Hide history panel"
-                          >
-                            Hide
-                          </button>
-                        </div>
-                        <div className="max-h-52 overflow-auto px-2 pb-2">
-                          {data?.history.length ? (
-                            data.history.map((entry) => (
-                              <button
-                                key={entry.id}
-                                className="mb-1 w-full rounded border border-transparent px-2 py-1.5 text-left text-xs hover:border-slate-200 hover:bg-slate-50"
-                                onClick={() => openHistory(entry)}
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="font-semibold text-teal-700">{entry.method}</span>
-                                  <span className={entry.error ? "text-rose-600" : "text-slate-500"}>
-                                    {entry.error ? "ERR" : entry.status}
-                                  </span>
-                                </div>
-                                <div className="truncate text-slate-500">{entry.url}</div>
-                              </button>
-                            ))
-                          ) : (
-                            <p className="px-2 pb-3 text-xs text-slate-500">No requests sent yet.</p>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="flex h-10 w-full items-center justify-between gap-2 px-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                        onClick={() => setShowHistoryPanel(true)}
-                        aria-label="Show history panel"
-                        title="Show history panel"
-                      >
-                        <div className="flex items-center gap-2">
-                          <History size={15} />
-                          History
-                        </div>
-                        <span className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600">
-                          Show
-                        </span>
-                      </button>
                     )}
                   </div>
                 </>
@@ -2238,7 +2262,18 @@ function CollectionTree({
   onToggleCollection,
   onToggleFolder,
   onRunCollection,
-  onRunFolder
+  onRunFolder,
+  draggedRequestId,
+  dropTargetCollectionId,
+  dropTargetFolderId,
+  onRequestDragStart,
+  onRequestDragEnd,
+  onCollectionDragOver,
+  onCollectionDragLeave,
+  onCollectionDrop,
+  onFolderDragOver,
+  onFolderDragLeave,
+  onFolderDrop
 }: {
   collection: ApiCollection;
   selectedRequestId: string | null;
@@ -2256,10 +2291,50 @@ function CollectionTree({
   onToggleFolder: (folder: ApiFolder) => void;
   onRunCollection: (collection: ApiCollection) => void;
   onRunFolder: (folder: ApiFolder) => void;
+  draggedRequestId: string | null;
+  dropTargetCollectionId: string | null;
+  dropTargetFolderId: string | null;
+  onRequestDragStart: (request: ApiRequest) => void;
+  onRequestDragEnd: () => void;
+  onCollectionDragOver: (collection: ApiCollection, requestId: string | null) => void;
+  onCollectionDragLeave: (collection: ApiCollection) => void;
+  onCollectionDrop: (collection: ApiCollection, requestId: string | null) => void;
+  onFolderDragOver: (folder: ApiFolder, requestId: string | null) => void;
+  onFolderDragLeave: (folder: ApiFolder) => void;
+  onFolderDrop: (folder: ApiFolder, requestId: string | null) => void;
 }) {
+  const dropActive = draggedRequestId !== null && dropTargetCollectionId === collection.id;
+
   return (
     <div className="mb-2">
-      <div className="group flex items-center gap-1 rounded px-2 py-1.5 hover:bg-slate-50">
+      <div
+        className={`group flex items-center gap-1 rounded px-2 py-1.5 hover:bg-slate-50 ${
+          dropActive ? "bg-amber-50 ring-1 ring-amber-300" : ""
+        }`}
+        onDragOver={(event) => {
+          const requestId = getDraggedRequestId(event) || draggedRequestId;
+          if (!requestId && !hasDraggedRequestType(event)) {
+            return;
+          }
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          if (requestId) {
+            onCollectionDragOver(collection, requestId);
+          }
+        }}
+        onDragLeave={(event) => {
+          const nextTarget = event.relatedTarget;
+          if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+            return;
+          }
+          onCollectionDragLeave(collection);
+        }}
+        onDrop={(event) => {
+          const requestId = getDraggedRequestId(event) || draggedRequestId;
+          event.preventDefault();
+          onCollectionDrop(collection, requestId || null);
+        }}
+      >
         <button
           type="button"
           className="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600"
@@ -2299,6 +2374,13 @@ function CollectionTree({
               onDeleteFolder={onDeleteFolder}
               onToggleFolder={onToggleFolder}
               onRunFolder={onRunFolder}
+              draggedRequestId={draggedRequestId}
+              dropTargetFolderId={dropTargetFolderId}
+              onRequestDragStart={onRequestDragStart}
+              onRequestDragEnd={onRequestDragEnd}
+              onFolderDragOver={onFolderDragOver}
+              onFolderDragLeave={onFolderDragLeave}
+              onFolderDrop={onFolderDrop}
             />
           ))}
           {collection.requests.map((request) => (
@@ -2307,6 +2389,8 @@ function CollectionTree({
               request={request}
               selected={selectedRequestId === request.id}
               onSelect={onSelectRequest}
+              onDragStart={onRequestDragStart}
+              onDragEnd={onRequestDragEnd}
             />
           ))}
         </div>
@@ -2326,7 +2410,14 @@ function FolderTree({
   onRenameFolder,
   onDeleteFolder,
   onToggleFolder,
-  onRunFolder
+  onRunFolder,
+  draggedRequestId,
+  dropTargetFolderId,
+  onRequestDragStart,
+  onRequestDragEnd,
+  onFolderDragOver,
+  onFolderDragLeave,
+  onFolderDrop
 }: {
   folder: ApiFolder;
   selectedRequestId: string | null;
@@ -2339,15 +2430,46 @@ function FolderTree({
   onDeleteFolder: (folder: ApiFolder) => void;
   onToggleFolder: (folder: ApiFolder) => void;
   onRunFolder: (folder: ApiFolder) => void;
+  draggedRequestId: string | null;
+  dropTargetFolderId: string | null;
+  onRequestDragStart: (request: ApiRequest) => void;
+  onRequestDragEnd: () => void;
+  onFolderDragOver: (folder: ApiFolder, requestId: string | null) => void;
+  onFolderDragLeave: (folder: ApiFolder) => void;
+  onFolderDrop: (folder: ApiFolder, requestId: string | null) => void;
 }) {
   const selected = selectedFolderId === folder.id;
+  const dropActive = draggedRequestId !== null && dropTargetFolderId === folder.id;
 
   return (
     <div>
       <div
         className={`group flex items-center gap-1 rounded px-2 py-1.5 ${
           selected ? "bg-teal-50 text-teal-800" : "hover:bg-slate-50"
-        }`}
+        } ${dropActive ? "bg-amber-50 ring-1 ring-amber-300" : ""}`}
+        onDragOver={(event) => {
+          const requestId = getDraggedRequestId(event) || draggedRequestId;
+          if (!requestId && !hasDraggedRequestType(event)) {
+            return;
+          }
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          if (requestId) {
+            onFolderDragOver(folder, requestId);
+          }
+        }}
+        onDragLeave={(event) => {
+          const nextTarget = event.relatedTarget;
+          if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+            return;
+          }
+          onFolderDragLeave(folder);
+        }}
+        onDrop={(event) => {
+          const requestId = getDraggedRequestId(event) || draggedRequestId;
+          event.preventDefault();
+          onFolderDrop(folder, requestId || null);
+        }}
       >
         <button
           type="button"
@@ -2391,6 +2513,13 @@ function FolderTree({
               onDeleteFolder={onDeleteFolder}
               onToggleFolder={onToggleFolder}
               onRunFolder={onRunFolder}
+              draggedRequestId={draggedRequestId}
+              dropTargetFolderId={dropTargetFolderId}
+              onRequestDragStart={onRequestDragStart}
+              onRequestDragEnd={onRequestDragEnd}
+              onFolderDragOver={onFolderDragOver}
+              onFolderDragLeave={onFolderDragLeave}
+              onFolderDrop={onFolderDrop}
             />
           ))}
           {folder.requests.map((request) => (
@@ -2399,6 +2528,8 @@ function FolderTree({
               request={request}
               selected={selectedRequestId === request.id}
               onSelect={onSelectRequest}
+              onDragStart={onRequestDragStart}
+              onDragEnd={onRequestDragEnd}
             />
           ))}
         </div>
@@ -2410,18 +2541,31 @@ function FolderTree({
 function RequestTreeItem({
   request,
   selected,
-  onSelect
+  onSelect,
+  onDragStart,
+  onDragEnd
 }: {
   request: ApiRequest;
   selected: boolean;
   onSelect: (request: ApiRequest) => void;
+  onDragStart: (request: ApiRequest) => void;
+  onDragEnd: () => void;
 }) {
   return (
     <button
+      type="button"
+      draggable
       className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${
         selected ? "bg-teal-600 text-white" : "hover:bg-slate-50"
       }`}
       onClick={() => onSelect(request)}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData(REQUEST_DRAG_DATA_TYPE, request.id);
+        event.dataTransfer.setData("text/plain", request.id);
+        onDragStart(request);
+      }}
+      onDragEnd={onDragEnd}
     >
       <FileText size={14} className={selected ? "text-white" : "text-slate-500"} />
       <span className={selected ? "text-white" : "font-semibold text-teal-700"}>{request.method}</span>
@@ -3109,23 +3253,6 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
   return (
     <div className="grid gap-4">
       <ScriptResultsPanel results={response.scriptResults ?? []} />
-      <details className="group rounded border border-slate-200 bg-white p-3 shadow-panel">
-        <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
-          <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
-          <span>Headers</span>
-          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
-            {response.headers.length}
-          </span>
-        </summary>
-        <div className="mt-3 grid gap-1 text-xs">
-          {response.headers.map((header) => (
-            <div key={`${header.key}-${header.value}`} className="grid grid-cols-[120px_1fr] gap-2">
-              <span className="truncate font-semibold text-slate-600">{header.key}</span>
-              <span className="break-all font-mono text-slate-700">{header.value}</span>
-            </div>
-          ))}
-        </div>
-      </details>
       <EditorSection title="Body">
         <div className="mb-3 inline-flex rounded border border-slate-200 bg-slate-50 p-1">
           {(["pretty", "edit"] as const).map((mode) => {
@@ -3169,12 +3296,15 @@ function ResponsePanel({
   busy: boolean;
 }) {
   const responseSummary = response && !("error" in response) ? response : null;
+  const [showHeadersModal, setShowHeadersModal] = useState(false);
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-t border-slate-200 bg-white">
       <div className="flex h-12 items-center gap-3 border-b border-slate-200 px-4">
         <span className="shrink-0 text-sm font-semibold text-slate-700">Response</span>
-        {responseSummary ? <ResponseSummary response={responseSummary} /> : null}
+        {responseSummary ? (
+          <ResponseSummary response={responseSummary} onOpenHeaders={() => setShowHeadersModal(true)} />
+        ) : null}
         {response && "error" in response ? (
           <span className="truncate rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700">
             {response.error}
@@ -3195,6 +3325,9 @@ function ResponsePanel({
           </p>
         )}
       </div>
+      {responseSummary && showHeadersModal ? (
+        <ResponseHeadersModal headers={responseSummary.headers} onClose={() => setShowHeadersModal(false)} />
+      ) : null}
     </aside>
   );
 }
@@ -3268,9 +3401,11 @@ function ScriptResultsPanel({ results }: { results: ScriptExecutionResult[] }) {
 }
 
 function ResponseSummary({
-  response
+  response,
+  onOpenHeaders
 }: {
   response: SendResult;
+  onOpenHeaders: () => void;
 }) {
   return (
     <div className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap">
@@ -3279,8 +3414,44 @@ function ResponseSummary({
         <SummaryChip label="Time" value={`${response.durationMs} ms`} tone="amber" />
         <SummaryChip label="Size" value={formatSize(response.sizeBytes)} />
         <SummaryChip label="Type" value={response.contentType || "unknown"} />
+        <button
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
+          onClick={onOpenHeaders}
+          type="button"
+        >
+          <span>Headers</span>
+          <span className="text-slate-400">{response.headers.length}</span>
+        </button>
       </div>
     </div>
+  );
+}
+
+function ResponseHeadersModal({
+  headers,
+  onClose
+}: {
+  headers: KeyValueRow[];
+  onClose: () => void;
+}) {
+  return (
+    <Modal title={`Response Headers (${headers.length})`} onClose={onClose}>
+      {headers.length ? (
+        <div className="grid max-h-[65vh] gap-2 overflow-auto text-sm">
+          {headers.map((header) => (
+            <div
+              key={`${header.key}-${header.value}`}
+              className="grid gap-1 rounded border border-slate-200 bg-slate-50 p-3 md:grid-cols-[180px_1fr] md:gap-3"
+            >
+              <span className="font-semibold text-slate-700">{header.key}</span>
+              <span className="break-all font-mono text-xs text-slate-700 md:text-sm">{header.value}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-sm text-slate-500">No headers returned.</div>
+      )}
+    </Modal>
   );
 }
 
