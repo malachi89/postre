@@ -130,6 +130,26 @@ model HistoryEntry {
   @@index([requestId])
 }
 
+model Cookie {
+  id             String    @id @default(cuid())
+  name           String
+  value          String
+  domain         String
+  path           String    @default("/")
+  hostOnly       Boolean   @default(true)
+  secure         Boolean   @default(false)
+  httpOnly       Boolean   @default(false)
+  sameSite       String?
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  lastAccessedAt DateTime?
+
+  @@unique([domain, path, name])
+  @@index([domain])
+  @@index([expiresAt])
+}
+
 model ImportRecord {
   id             String   @id @default(cuid())
   type           String

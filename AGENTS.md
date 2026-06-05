@@ -14,5 +14,6 @@
 - Postman import: v2.1 collections and environments via `postman-importer.ts`
 - Postman export: `GET /api/export` via `postman-exporter.ts` (reverse of importer)
 - Export format: wrapping `{ collections: [...], environments: [...] }` with Postman v2.1 collection/environment JSON inside
-- App menu (gear icon top-right): dropdown with "Export all to Postman" + "Toggle environments panel"
-- Schema models: Collection, Folder, Request, Environment, Variable, HistoryEntry, ImportRecord
+- Cookie jar: `src/lib/server/cookies.ts`, `GET/DELETE /api/cookies`, automatic send/capture around requests
+- App menu (gear icon top-right): dropdown with "Export all to Postman", "Manage cookies" + "Toggle environments panel"
+- Schema models: Collection, Folder, Request, Environment, Variable, HistoryEntry, Cookie, ImportRecord

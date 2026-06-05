@@ -132,6 +132,22 @@ export interface AppData {
   history: ApiHistoryEntry[];
 }
 
+export interface ApiCookie {
+  id: string;
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  hostOnly: boolean;
+  secure: boolean;
+  httpOnly: boolean;
+  sameSite: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastAccessedAt: string | null;
+}
+
 export interface ImportPreview {
   type: ImportKind;
   name: string;

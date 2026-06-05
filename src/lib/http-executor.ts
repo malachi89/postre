@@ -4,7 +4,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 export async function executeHttpRequest(
   draft: RequestDraft,
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  cookieHeader = ""
 ): Promise<SendResult | SendErrorResult> {
   const started = performance.now();
   const controller = new AbortController();
@@ -13,6 +14,7 @@ export async function executeHttpRequest(
   try {
     const targetUrl = buildTargetUrl(draft);
     const headers = buildHeaders(draft);
+    applyCookieHeader(headers, cookieHeader);
     const body = buildBody(draft, headers);
 
     const response = await fetch(targetUrl, {
@@ -30,11 +32,7 @@ export async function executeHttpRequest(
     return {
       status: response.status,
       statusText: response.statusText,
-      headers: [...response.headers.entries()].map(([key, value]) => ({
-        key,
-        value,
-        enabled: true
-      })),
+      headers: serializeResponseHeaders(response.headers),
       body: bodyText,
       contentType: response.headers.get("content-type") ?? "",
       durationMs,
@@ -51,6 +49,34 @@ export async function executeHttpRequest(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function serializeResponseHeaders(headers: Headers): KeyValueRow[] {
+  const rows = [...headers.entries()].map(([key, value]) => ({
+    key,
+    value,
+    enabled: true
+  }));
+  const setCookies = readSetCookieHeaders(headers);
+
+  if (setCookies.length) {
+    return [
+      ...rows.filter((row) => row.key.toLowerCase() !== "set-cookie"),
+      ...setCookies.map((value) => ({ key: "set-cookie", value, enabled: true }))
+    ];
+  }
+
+  return rows;
+}
+
+function readSetCookieHeaders(headers: Headers): string[] {
+  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  if (typeof getSetCookie === "function") {
+    return getSetCookie.call(headers);
+  }
+
+  const combined = headers.get("set-cookie");
+  return combined ? [combined] : [];
 }
 
 export function buildTargetUrl(draft: RequestDraft): string {
@@ -97,6 +123,37 @@ function buildHeaders(draft: RequestDraft): Headers {
   }
 
   return headers;
+}
+
+function applyCookieHeader(headers: Headers, cookieHeader: string) {
+  const jarCookie = cookieHeader.trim();
+  if (!jarCookie) {
+    return;
+  }
+
+  const manualCookie = headers.get("Cookie");
+  if (!manualCookie) {
+    headers.set("Cookie", jarCookie);
+    return;
+  }
+
+  const manualNames = new Set(
+    manualCookie
+      .split(";")
+      .map((part) => part.trim().split("=")[0]?.trim())
+      .filter(Boolean)
+  );
+  const jarParts = jarCookie
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => {
+      const name = part.split("=")[0]?.trim();
+      return name && !manualNames.has(name);
+    });
+
+  if (jarParts.length) {
+    headers.set("Cookie", `${manualCookie}; ${jarParts.join("; ")}`);
+  }
 }
 
 function buildBody(draft: RequestDraft, _headers: Headers): BodyInit | undefined {

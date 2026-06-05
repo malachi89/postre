@@ -3,6 +3,7 @@ import { stringifyJson } from "@/lib/json";
 import { applyScriptMutations, runRequestScript } from "@/lib/request-scripts";
 import { getScriptFields, getVariablesForDraft, requestToPrismaInput } from "@/lib/server/data";
 import { executeHttpRequest } from "@/lib/http-executor";
+import { getCookieHeaderForUrl, storeResponseCookies } from "@/lib/server/cookies";
 import { resolveEffectiveScriptSources } from "@/lib/server/script-inheritance";
 import { resolveRequestDraft } from "@/lib/variable-resolver";
 import type { RequestDraft, ScriptExecutionResult, SendResult } from "@/lib/types";
@@ -119,7 +120,8 @@ export async function executeRequest(input: ExecuteRequestInput): Promise<Execut
     };
   }
 
-  const httpResult = await executeHttpRequest(resolved.draft, input.timeoutMs);
+  const cookieHeader = await getCookieHeaderForUrl(resolved.draft.url);
+  const httpResult = await executeHttpRequest(resolved.draft, input.timeoutMs, cookieHeader);
   if ("error" in httpResult) {
     await saveErrorHistory(draft, resolved.draft.url, httpResult.error, httpResult.durationMs);
     return {
@@ -131,6 +133,8 @@ export async function executeRequest(input: ExecuteRequestInput): Promise<Execut
       scriptResults
     };
   }
+
+  await storeResponseCookies(resolved.draft.url, getSetCookieHeaders(httpResult.headers));
 
   for (const scriptSource of postScripts) {
     const run = await runRequestScript({
@@ -192,6 +196,12 @@ export async function executeRequest(input: ExecuteRequestInput): Promise<Execut
     resolvedDraft: resolved.draft,
     scriptResults
   };
+}
+
+function getSetCookieHeaders(headers: SendResult["headers"]): string[] {
+  return headers
+    .filter((header) => header.key.toLowerCase() === "set-cookie")
+    .map((header) => header.value);
 }
 
 async function saveDraftBeforeSend(draft: RequestDraft): Promise<RequestDraft> {

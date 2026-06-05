@@ -6,6 +6,7 @@ import {
   ChevronRight,
   ChevronUp,
   Copy,
+  Cookie,
   Download,
   Eye,
   EyeOff,
@@ -18,6 +19,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RotateCw,
   Save,
   Send,
   Settings,
@@ -31,6 +33,7 @@ import type { ReactNode } from "react";
 import type {
   ApiCollection,
   ApiCollectionRunReport,
+  ApiCookie,
   ApiEnvironment,
   ApiFolder,
   ApiRequest,
@@ -609,6 +612,7 @@ export function PostreApp() {
   const [environmentMenu, setEnvironmentMenu] = useState<EnvironmentMenuState | null>(null);
   const [showAppMenu, setShowAppMenu] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showCookies, setShowCookies] = useState(false);
   const [runnerTarget, setRunnerTarget] = useState<CollectionRunnerTarget | null>(null);
   const [runnerReport, setRunnerReport] = useState<ApiCollectionRunReport | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -678,6 +682,11 @@ export function PostreApp() {
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "Export failed");
     }
+    setShowAppMenu(false);
+  }, []);
+
+  const openCookies = useCallback(() => {
+    setShowCookies(true);
     setShowAppMenu(false);
   }, []);
 
@@ -1800,6 +1809,13 @@ export function PostreApp() {
                 </button>
                 <button
                   className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                  onClick={openCookies}
+                >
+                  <Cookie size={15} />
+                  Manage cookies
+                </button>
+                <button
+                  className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
                   onClick={() => {
                     setShowEnvironmentsPanel((current) => !current);
                     setShowAppMenu(false);
@@ -2169,6 +2185,8 @@ export function PostreApp() {
           }}
         />
       ) : null}
+
+      {showCookies ? <CookiesModal onClose={() => setShowCookies(false)} onNotice={setNotice} /> : null}
 
       {requestTabMenu ? (
         <RequestTabContextMenu
@@ -4572,6 +4590,160 @@ function Modal({
   );
 }
 
+function CookiesModal({
+  onClose,
+  onNotice
+}: {
+  onClose: () => void;
+  onNotice: (message: string | null) => void;
+}) {
+  const [cookies, setCookies] = useState<ApiCookie[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyCookieId, setBusyCookieId] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+
+  const loadCookies = useCallback(async () => {
+    setLoading(true);
+    try {
+      setCookies(await api<ApiCookie[]>("/api/cookies"));
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "Could not load cookies.");
+    } finally {
+      setLoading(false);
+    }
+  }, [onNotice]);
+
+  useEffect(() => {
+    void loadCookies();
+  }, [loadCookies]);
+
+  async function removeCookie(cookie: ApiCookie) {
+    setBusyCookieId(cookie.id);
+    try {
+      await api(`/api/cookies?id=${encodeURIComponent(cookie.id)}`, { method: "DELETE" });
+      setCookies((current) => current.filter((item) => item.id !== cookie.id));
+      onNotice(`Cookie "${cookie.name}" deleted.`);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "Could not delete cookie.");
+    } finally {
+      setBusyCookieId(null);
+    }
+  }
+
+  async function clearAllCookies() {
+    if (!cookies.length) {
+      return;
+    }
+
+    setClearing(true);
+    try {
+      await api("/api/cookies", { method: "DELETE" });
+      setCookies([]);
+      onNotice("Cookies cleared.");
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "Could not clear cookies.");
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  return (
+    <Modal title={`Cookies (${cookies.length})`} onClose={onClose}>
+      <div className="flex max-h-[70vh] flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm text-slate-500">
+            Cookies captured from response headers are sent automatically on matching requests.
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              className="inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => void loadCookies()}
+              disabled={loading}
+            >
+              {loading ? <Loader2 className="animate-spin" size={15} /> : <RotateCw size={15} />}
+              Refresh
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-9 items-center gap-2 rounded border border-red-200 bg-red-50 px-3 text-sm text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => void clearAllCookies()}
+              disabled={!cookies.length || clearing}
+            >
+              {clearing ? <Loader2 className="animate-spin" size={15} /> : <Trash2 size={15} />}
+              Clear all
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 overflow-auto rounded border border-slate-200">
+          {loading ? (
+            <LoadingBlock label="Loading cookies" />
+          ) : cookies.length ? (
+            <table className="min-w-full text-left text-sm">
+              <thead className="sticky top-0 bg-slate-50 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Name</th>
+                  <th className="px-3 py-2 font-semibold">Value</th>
+                  <th className="px-3 py-2 font-semibold">Domain</th>
+                  <th className="px-3 py-2 font-semibold">Path</th>
+                  <th className="px-3 py-2 font-semibold">Expires</th>
+                  <th className="px-3 py-2 font-semibold">Flags</th>
+                  <th className="w-12 px-2 py-2" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {cookies.map((cookie) => (
+                  <tr key={cookie.id} className="align-top">
+                    <td className="max-w-44 px-3 py-2 font-mono font-semibold text-slate-800">
+                      <span className="block truncate" title={cookie.name}>{cookie.name}</span>
+                    </td>
+                    <td className="max-w-60 px-3 py-2 font-mono text-slate-600">
+                      <span className="block truncate" title={cookie.value}>{cookie.value}</span>
+                    </td>
+                    <td className="max-w-52 px-3 py-2 text-slate-700">
+                      <span className="block truncate" title={cookie.domain}>
+                        {cookie.hostOnly ? cookie.domain : `.${cookie.domain}`}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-slate-600">{cookie.path}</td>
+                    <td className="px-3 py-2 text-slate-600">
+                      {cookie.expiresAt ? formatDateTime(cookie.expiresAt) : "Session"}
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-1">
+                        {cookie.httpOnly ? <CookieFlag label="HttpOnly" /> : null}
+                        {cookie.secure ? <CookieFlag label="Secure" /> : null}
+                        {cookie.sameSite ? <CookieFlag label={`SameSite=${cookie.sameSite}`} /> : null}
+                        {cookie.hostOnly ? <CookieFlag label="Host only" /> : null}
+                      </div>
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <IconButton label={`Delete ${cookie.name}`} onClick={() => void removeCookie(cookie)}>
+                        {busyCookieId === cookie.id ? <Loader2 className="animate-spin" size={15} /> : <Trash2 size={15} />}
+                      </IconButton>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="px-4 py-8 text-center text-sm text-slate-500">No cookies captured yet.</div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function CookieFlag({ label }: { label: string }) {
+  return (
+    <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">
+      {label}
+    </span>
+  );
+}
+
 function ConfirmDialog({
   message,
   onConfirm,
@@ -5413,6 +5585,15 @@ function formatSize(sizeBytes: number): string {
   }
 
   return `${(sizeBytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
 }
 
 async function api<T = unknown>(
