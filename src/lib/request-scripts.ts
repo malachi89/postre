@@ -1,3 +1,7 @@
+import { execFileSync } from "child_process";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { getQuickJS } from "quickjs-emscripten";
 import { prisma } from "@/lib/db";
 import { inferIsSecret } from "@/lib/secret-utils";
@@ -11,9 +15,10 @@ import type {
 } from "@/lib/types";
 import type { VariableBuckets } from "@/lib/variable-resolver";
 
-const DEFAULT_SCRIPT_TIMEOUT_MS = 1_000;
+const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
 const SCRIPT_MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
 const SCRIPT_STACK_SIZE_BYTES = 512 * 1024;
+const SEND_REQUEST_TIMEOUT_SECS = 30;
 
 type ScriptMutationAction = "set" | "unset";
 
@@ -106,6 +111,15 @@ export async function runRequestScript(input: RequestScriptInput): Promise<Reque
   vm.setProp(vm.global, "console", consoleHandle);
   consoleHandle.dispose();
   logHandle.dispose();
+
+  const sendRequestHandle = vm.newFunction("__sendRequest", (configHandle) => {
+    const configJson = vm.getString(configHandle);
+    const config = JSON.parse(configJson) as SyncRequestConfig;
+    const responseJson = executeSyncRequest(config);
+    return vm.newString(responseJson);
+  });
+  vm.setProp(vm.global, "__sendRequest", sendRequestHandle);
+  sendRequestHandle.dispose();
 
   try {
     const evaluation = vm.evalCode(buildScriptSource(state, script), `${input.phase}.js`);
@@ -339,6 +353,49 @@ function buildScriptSource(state: ScriptState, script: string): string {
         __unsetLocal("request", key);
         __mutations.push({ scope: "REQUEST", action: "unset", key: key });
       }
+    },
+    sendRequest: function (reqOrUrl, callback) {
+      var config;
+      if (typeof reqOrUrl === "string") {
+        config = { url: reqOrUrl, method: "GET" };
+      } else {
+        config = {
+          url: reqOrUrl.url || "",
+          method: reqOrUrl.method || "GET",
+          header: reqOrUrl.header || {},
+          body: reqOrUrl.body || undefined,
+          timeout: reqOrUrl.timeout || undefined
+        };
+      }
+      var rawJson = __sendRequest(JSON.stringify(config));
+      var parsed = JSON.parse(rawJson);
+      var response = {
+        code: parsed.code || 0,
+        status: parsed.status || 0,
+        body: parsed.body || "",
+        error: parsed.error || null,
+        headers: {
+          toJSON: function () {
+            return parsed.headers || [];
+          },
+          get: function (key) {
+            var needle = __string(key).toLowerCase();
+            var list = parsed.headers || [];
+            for (var i = 0; i < list.length; i++) {
+              if (__string(list[i].key).toLowerCase() === needle) {
+                return __string(list[i].value);
+              }
+            }
+            return undefined;
+          }
+        },
+        text: function () { return parsed.body || ""; },
+        json: function () { return JSON.parse(parsed.body || "{}"); }
+      };
+      if (typeof callback === "function") {
+        callback(parsed.error ? parsed.error : null, response);
+      }
+      return response;
     }
   };
 
@@ -387,6 +444,111 @@ function normalizeMutationScope(scope: unknown): VariableScope | null {
   }
 
   return null;
+}
+
+interface SyncRequestConfig {
+  url?: string;
+  method?: string;
+  header?: Record<string, string> | Array<{ key: string; value: string }>;
+  body?: { mode?: string; raw?: string };
+  timeout?: number;
+}
+
+function executeSyncRequest(config: SyncRequestConfig): string {
+  const url = config.url ?? "";
+  const method = (config.method ?? "GET").toUpperCase();
+
+  if (!url) {
+    return JSON.stringify({ error: "pm.sendRequest: url is required" });
+  }
+
+  const timeoutSecs = config.timeout
+    ? Math.ceil(config.timeout / 1000)
+    : SEND_REQUEST_TIMEOUT_SECS;
+
+  const headerDir = mkdtempSync(join(tmpdir(), "postre-sr-"));
+  const headerFile = join(headerDir, "headers.txt");
+
+  const args = [
+    "-s", "-S",
+    "-L",
+    "-X", method,
+    "--max-time", String(timeoutSecs),
+    "-D", headerFile,
+    "-w", "\n__POSTRE_STATUS__%{http_code}"
+  ];
+
+  if (config.header) {
+    if (Array.isArray(config.header)) {
+      for (const h of config.header) {
+        if (h.key) args.push("-H", `${h.key}: ${h.value ?? ""}`);
+      }
+    } else {
+      for (const [key, value] of Object.entries(config.header)) {
+        args.push("-H", `${key}: ${value}`);
+      }
+    }
+  }
+
+  if (config.body?.raw && method !== "GET" && method !== "HEAD") {
+    args.push("-d", config.body.raw);
+  }
+
+  args.push(url);
+
+  try {
+    const stdout = execFileSync("curl", args, {
+      encoding: "utf-8",
+      timeout: (timeoutSecs + 2) * 1000,
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    const statusMatch = stdout.match(/__POSTRE_STATUS__(\d+)$/);
+    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+    const body = stdout.replace(/\n?__POSTRE_STATUS__\d+$/, "");
+
+    let headers: Array<{ key: string; value: string }> = [];
+    try {
+      const headerText = readFileSync(headerFile, "utf-8");
+      headers = parseResponseHeaders(headerText);
+    } catch { /* ignore missing header file */ }
+
+    return JSON.stringify({
+      code: statusCode,
+      status: statusCode,
+      body,
+      headers
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Request failed";
+    return JSON.stringify({ error: message });
+  } finally {
+    try { rmSync(headerDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+function parseResponseHeaders(headerText: string): Array<{ key: string; value: string }> {
+  const lines = headerText.split(/\r?\n/);
+  const headers: Array<{ key: string; value: string }> = [];
+
+  // With -L (follow redirects), multiple header blocks exist.
+  // Reset on each status line so we keep only the final response's headers.
+  for (const line of lines) {
+    if (/^HTTP\/[\d.]+ \d+/.test(line)) {
+      headers.length = 0;
+      continue;
+    }
+    const colonIndex = line.indexOf(":");
+    if (colonIndex > 0) {
+      headers.push({
+        key: line.slice(0, colonIndex).trim(),
+        value: line.slice(colonIndex + 1).trim()
+      });
+    }
+  }
+
+  return headers;
 }
 
 function formatScriptError(value: unknown): string {

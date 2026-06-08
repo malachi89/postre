@@ -1,4 +1,5 @@
 import type { KeyValueRow, RequestDraft, SendErrorResult, SendResult } from "@/lib/types";
+import { getAutoHeaders } from "@/lib/auto-headers";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -136,12 +137,19 @@ export function buildTargetUrl(draft: RequestDraft): string {
 function buildHeaders(draft: RequestDraft): Headers {
   const headers = new Headers();
 
+  // Apply auto-generated default headers first (lowest priority)
+  for (const auto of getAutoHeaders(draft)) {
+    headers.set(auto.key, auto.value);
+  }
+
+  // User-defined headers override auto headers
   for (const row of draft.headers) {
     if (row.enabled && row.key.trim()) {
       headers.set(row.key.trim(), row.value);
     }
   }
 
+  // Auth headers
   if (draft.auth.type === "bearer" && draft.auth.token) {
     headers.set("Authorization", `Bearer ${draft.auth.token}`);
   }
@@ -154,10 +162,6 @@ function buildHeaders(draft: RequestDraft): Headers {
 
   if (draft.auth.type === "apiKey" && draft.auth.placement === "header" && draft.auth.key) {
     headers.set(draft.auth.key, draft.auth.value ?? "");
-  }
-
-  if (draft.bodyMode === "raw_json" && draft.bodyRaw.trim() && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
   }
 
   return headers;

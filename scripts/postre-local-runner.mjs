@@ -45,11 +45,12 @@ async function main() {
   log("PostRE local runner starting.");
   log(`Repository: ${repoRoot}`);
   await stopStaleServerFromPidFile();
-  await setupUntilSuccess({ install: true, prisma: true, db: true }, "initial setup");
+  await setupUntilSuccess({ install: true, prisma: true, db: true, build: true }, "initial setup");
   if (shuttingDown) {
     return;
   }
 
+  lastFingerprint = getFingerprint();
   startServer();
   installWatchers();
   setInterval(checkForPolledChanges, pollMs).unref();
@@ -98,6 +99,10 @@ async function runSetup(flags, label) {
       await runCommand(npmCommand, ["run", "db:seed"]);
     }
 
+    if (flags.build !== false) {
+      await runCommand(npmCommand, ["run", "build"]);
+    }
+
     log(`${label} complete.`);
   } finally {
     setupRunning = false;
@@ -127,10 +132,10 @@ function startServer() {
   }
 
   serverStopping = false;
-  log("Starting PostRE dev server on http://localhost:5500.");
-  writeLogLine(serverLog, "server", "Starting npm run dev.");
+  log("Starting PostRE server on http://localhost:5500.");
+  writeLogLine(serverLog, "server", "Starting npm run start.");
 
-  serverProcess = spawn(npmCommand, ["run", "dev"], {
+  serverProcess = spawn(npmCommand, ["run", "start"], {
     cwd: repoRoot,
     detached: process.platform !== "win32",
     env: getChildEnv(),
@@ -153,10 +158,10 @@ function startServer() {
     const pid = serverProcess?.pid;
     serverProcess = null;
     cleanupPidFile(serverPidPath, pid);
-    log(`PostRE dev server exited with code ${code ?? "null"} and signal ${signal ?? "null"}.`);
+    log(`PostRE server exited with code ${code ?? "null"} and signal ${signal ?? "null"}.`);
 
     if (!serverStopping && !shuttingDown) {
-      scheduleRefresh("server-exit", { install: false, prisma: false, db: false });
+      scheduleRefresh("server-exit", { install: false, prisma: false, db: false, build: false });
     }
   });
 }
@@ -190,7 +195,7 @@ async function stopStaleServerFromPidFile() {
 }
 
 function scheduleRefresh(reason, flags = classifyReason(reason)) {
-  if (shuttingDown) {
+  if (shuttingDown || setupRunning) {
     return;
   }
 
@@ -222,6 +227,8 @@ async function runPendingRefresh() {
   await stopServer();
   await setupUntilSuccess(refresh.flags, label);
 
+  lastFingerprint = getFingerprint();
+
   if (!shuttingDown) {
     startServer();
   }
@@ -229,14 +236,18 @@ async function runPendingRefresh() {
 
 function classifyReason(reason) {
   if (reason === "package" || reason === "git" || reason === "setup-busy") {
-    return { install: true, prisma: true, db: true };
+    return { install: true, prisma: true, db: true, build: true };
   }
 
   if (reason === "schema") {
-    return { install: false, prisma: true, db: true };
+    return { install: false, prisma: true, db: true, build: true };
   }
 
-  return { install: false, prisma: false, db: false };
+  if (reason === "source") {
+    return { install: false, prisma: false, db: false, build: true };
+  }
+
+  return { install: false, prisma: false, db: false, build: false };
 }
 
 function mergeRefresh(current, next) {
@@ -249,7 +260,8 @@ function mergeRefresh(current, next) {
     flags: {
       install: current.flags.install || next.flags.install,
       prisma: current.flags.prisma || next.flags.prisma,
-      db: current.flags.db || next.flags.db
+      db: current.flags.db || next.flags.db,
+      build: current.flags.build || next.flags.build
     }
   };
 }

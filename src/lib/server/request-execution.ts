@@ -5,6 +5,7 @@ import { getScriptFields, getVariablesForDraft, requestToPrismaInput } from "@/l
 import { executeHttpRequest } from "@/lib/http-executor";
 import { getCookieHeaderForUrl, storeResponseCookies } from "@/lib/server/cookies";
 import { resolveEffectiveScriptSources } from "@/lib/server/script-inheritance";
+import { inferIsSecret } from "@/lib/secret-utils";
 import { resolveRequestDraft } from "@/lib/variable-resolver";
 import type { RequestDraft, ScriptExecutionResult, SendResult } from "@/lib/types";
 
@@ -105,6 +106,27 @@ export async function executeRequest(input: ExecuteRequestInput): Promise<Execut
 
   const variables = await getVariablesForDraft(draft, activeEnvironmentId);
   const resolved = resolveRequestDraft(draft, variables);
+
+  if (resolved.missingVariables.length > 0 && activeEnvironmentId) {
+    for (const key of resolved.missingVariables) {
+      const exists = await prisma.variable.findFirst({
+        where: { key, scope: "ENVIRONMENT", environmentId: activeEnvironmentId }
+      });
+      if (!exists) {
+        await prisma.variable.create({
+          data: {
+            key,
+            initialValue: "",
+            currentValue: "",
+            enabled: true,
+            scope: "ENVIRONMENT",
+            isSecret: inferIsSecret(key),
+            environmentId: activeEnvironmentId
+          }
+        });
+      }
+    }
+  }
 
   if (resolved.missingVariables.length > 0) {
     if (input.persistHistoryOnRuntimeError) {

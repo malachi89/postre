@@ -1,4 +1,5 @@
 import type { AuthConfig, BodyMode, HttpMethod, KeyValueRow, RequestDraft } from "@/lib/types";
+import { getAutoHeaders } from "@/lib/auto-headers";
 
 const NO_VALUE_FLAGS = new Set([
   "-L",
@@ -253,6 +254,16 @@ function tokenizeCurl(input: string): string[] {
 function buildEffectiveHeaders(draft: RequestDraft): KeyValueRow[] {
   const headers = new Map<string, KeyValueRow>();
 
+  // Auto-generated headers first (lowest priority)
+  for (const auto of getAutoHeaders(draft)) {
+    headers.set(auto.key.toLowerCase(), {
+      key: auto.key,
+      value: auto.value,
+      enabled: true
+    });
+  }
+
+  // User-defined headers override auto headers
   for (const row of draft.headers) {
     if (row.enabled && row.key.trim()) {
       headers.set(row.key.trim().toLowerCase(), {

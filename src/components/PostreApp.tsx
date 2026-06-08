@@ -57,6 +57,7 @@ import {
   getVariableSuggestions
 } from "@/lib/variable-autocomplete";
 import type { VariableAutocompleteMatch, VariableLookupLike } from "@/lib/variable-autocomplete";
+import { getEffectiveAutoHeaders } from "@/lib/auto-headers";
 
 type SendSuccessResponseState = SendResult & {
   resolvedDraft?: RequestDraft;
@@ -120,6 +121,7 @@ const SIDEBAR_PANEL_MIN_HEIGHT = 220;
 const SIDEBAR_HANDLE_HEIGHT = 10;
 const THEME_STORAGE_KEY = "postre-theme";
 const REQUEST_TABS_STORAGE_KEY = "postre-request-tabs";
+const EXPANDED_FOLDERS_STORAGE_KEY = "postre-expanded-folders";
 const REQUEST_DRAG_DATA_TYPE = "application/x-postre-request-id";
 const TOKEN_PATTERN = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
 type Theme = "light" | "dark";
@@ -137,6 +139,23 @@ function getDraggedRequestId(event: Pick<React.DragEvent, "dataTransfer">) {
 
 function hasDraggedRequestType(event: Pick<React.DragEvent, "dataTransfer">) {
   return Array.from(event.dataTransfer.types).includes(REQUEST_DRAG_DATA_TYPE);
+}
+
+function readExpandedFolders(): Record<string, boolean> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const stored = window.localStorage.getItem(EXPANDED_FOLDERS_STORAGE_KEY);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch {
+    // Ignore
+  }
+
+  return {};
 }
 
 function readPreferredTheme(): Theme {
@@ -615,7 +634,7 @@ export function PostreApp() {
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | null>(null);
   const [expandedCollections, setExpandedCollections] = useState<Record<string, boolean>>({});
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>(readExpandedFolders);
   const [collectionsPanelWidth, setCollectionsPanelWidth] = useState<number | null>(300);
   const [collectionsPanelHeight, setCollectionsPanelHeight] = useState<number | null>(360);
   const [theme, setTheme] = useState<Theme>("light");
@@ -630,7 +649,7 @@ export function PostreApp() {
   const [notice, setNotice] = useState<string | null>(null);
   const [mainPanelMode, setMainPanelMode] = useState<MainPanelMode>("request");
   const [showCollectionsPanel, setShowCollectionsPanel] = useState(true);
-  const [showEnvironmentsPanel, setShowEnvironmentsPanel] = useState(true);
+  const [showEnvironmentsPanel, setShowEnvironmentsPanel] = useState(false);
   const [renamingEnvironmentId, setRenamingEnvironmentId] = useState<string | null>(null);
   const [environmentMenu, setEnvironmentMenu] = useState<EnvironmentMenuState | null>(null);
   const [showAppMenu, setShowAppMenu] = useState(false);
@@ -758,6 +777,14 @@ export function PostreApp() {
       // Ignore storage failures. The tabs still work for the current session.
     }
   }, [activeRequestTabId, requestTabs]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(EXPANDED_FOLDERS_STORAGE_KEY, JSON.stringify(expandedFolders));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [expandedFolders]);
 
   const activeRequestTab = useMemo(
     () => requestTabs.find((tab) => tab.tabId === activeRequestTabId) ?? null,
@@ -1547,7 +1574,7 @@ export function PostreApp() {
     }
 
     let sendUrl = tab.draft.url.trim();
-    if (sendUrl && !sendUrl.startsWith("http://") && !sendUrl.startsWith("https://")) {
+    if (sendUrl && !sendUrl.startsWith("http://") && !sendUrl.startsWith("https://") && !sendUrl.includes("{{")) {
       sendUrl = `https://${sendUrl}`;
       updateRequestTab(tab.tabId, (current) => ({
         ...current,
@@ -3055,6 +3082,7 @@ function RequestEditor({
                       onChange={(headers) => onChange({ ...draft, headers })}
                       addLabel="Add header"
                     />
+                    <AutoHeadersDisplay draft={draft} />
                   </EditorSection>
                 ) : null}
 
@@ -3400,6 +3428,29 @@ function KeyValueTable({
         <Plus size={15} />
         {addLabel}
       </button>
+    </div>
+  );
+}
+
+function AutoHeadersDisplay({ draft }: { draft: RequestDraft }) {
+  const autoHeaders = useMemo(() => getEffectiveAutoHeaders(draft), [draft]);
+
+  if (autoHeaders.length === 0) return null;
+
+  return (
+    <div className="mt-3 rounded border border-dashed border-slate-200 bg-slate-50 px-3 py-2">
+      <p className="mb-2 text-xs font-semibold uppercase text-slate-400">Auto-generated</p>
+      <div className="grid gap-1">
+        {autoHeaders.map((header) => (
+          <div
+            key={header.key}
+            className="grid grid-cols-[minmax(120px,1fr)_minmax(120px,1.4fr)] gap-2 text-sm text-slate-400"
+          >
+            <span className="truncate">{header.key}</span>
+            <span className="truncate">{header.value}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
