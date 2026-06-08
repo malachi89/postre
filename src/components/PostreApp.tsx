@@ -16,6 +16,10 @@ import {
   FolderPlus,
   Loader2,
   Moon,
+  PanelBottomClose,
+  PanelBottomOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Play,
   Plus,
@@ -484,7 +488,7 @@ function TokenizedField({
       {!value ? (
         <span
           className={`pointer-events-none absolute left-0 top-0 select-none text-sm text-slate-400 ${
-            multiline ? "px-3 py-3 font-mono whitespace-pre-wrap" : "px-3 py-2.5 font-mono"
+            multiline ? "px-3 py-1.5 font-mono whitespace-pre-wrap" : "px-3 py-2 font-mono"
           }`}
         >
           {placeholder}
@@ -495,7 +499,7 @@ function TokenizedField({
         className={[
           "w-full rounded border border-slate-300 bg-white font-mono text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100",
           multiline
-            ? "min-h-64 max-h-[32rem] overflow-y-auto whitespace-pre-wrap break-words p-3 leading-6"
+            ? "min-h-64 max-h-[32rem] overflow-y-auto whitespace-pre-wrap break-words p-2 leading-6"
             : "min-h-[2.25rem] overflow-x-auto overflow-y-hidden whitespace-pre px-3 py-1.5 leading-5",
           disabled ? "cursor-not-allowed bg-slate-50 text-slate-400" : "",
           className
@@ -590,7 +594,7 @@ function TokenizedField({
       />
       {autocomplete ? (
         <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
-          <div className="border-b border-slate-100 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <div className="border-b border-slate-100 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Variables disponibles
           </div>
           {suggestions.length > 0 ? (
@@ -601,7 +605,7 @@ function TokenizedField({
                 return (
                   <button
                     key={suggestion.key}
-                    className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm ${
+                    className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm ${
                       active ? "bg-teal-50 text-teal-900" : "text-slate-700 hover:bg-slate-50"
                     }`}
                     onMouseDown={(event) => {
@@ -619,7 +623,7 @@ function TokenizedField({
               })}
             </div>
           ) : (
-            <div className="px-3 py-3 text-sm text-slate-500">No hay variables que coincidan.</div>
+            <div className="px-3 py-1.5 text-sm text-slate-500">No hay variables que coincidan.</div>
           )}
         </div>
       ) : null}
@@ -650,6 +654,8 @@ export function PostreApp() {
   const [mainPanelMode, setMainPanelMode] = useState<MainPanelMode>("request");
   const [showCollectionsPanel, setShowCollectionsPanel] = useState(true);
   const [showEnvironmentsPanel, setShowEnvironmentsPanel] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [showResponsePanel, setShowResponsePanel] = useState(true);
   const [renamingEnvironmentId, setRenamingEnvironmentId] = useState<string | null>(null);
   const [environmentMenu, setEnvironmentMenu] = useState<EnvironmentMenuState | null>(null);
   const [showAppMenu, setShowAppMenu] = useState(false);
@@ -1854,8 +1860,8 @@ export function PostreApp() {
 
   return (
     <main className="flex h-screen min-h-[720px] flex-col bg-[var(--background)] text-[var(--foreground)]">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4">
-        <div className="flex items-center gap-3">
+      <header className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3">
+        <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded bg-amber-500 text-white">
             <CakeIcon size={17} />
           </div>
@@ -1865,9 +1871,21 @@ export function PostreApp() {
         </div>
 
         <div className="flex items-center gap-2">
+          <IconButton
+            label={showSidebar ? "Hide sidebar" : "Show sidebar"}
+            onClick={() => setShowSidebar((c) => !c)}
+          >
+            {showSidebar ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
+          </IconButton>
+          <IconButton
+            label={showResponsePanel ? "Hide response" : "Show response"}
+            onClick={() => setShowResponsePanel((c) => !c)}
+          >
+            {showResponsePanel ? <PanelBottomClose size={17} /> : <PanelBottomOpen size={17} />}
+          </IconButton>
           <button
             type="button"
-            className="inline-flex h-9 w-9 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+className="inline-flex h-8 w-8 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
             onClick={() => setTheme(isDarkTheme ? "light" : "dark")}
             aria-label={isDarkTheme ? "Switch to light theme" : "Switch to dark theme"}
             aria-pressed={isDarkTheme}
@@ -1879,7 +1897,7 @@ export function PostreApp() {
             <Cookie size={17} />
           </IconButton>
           <select
-            className="h-9 min-w-44 rounded border border-slate-300 bg-white px-3 text-sm"
+            className="h-8 min-w-44 rounded border border-slate-300 bg-white px-3 text-sm"
             value={activeEnvironmentId ?? ""}
             onChange={async (event) => {
               const environmentId = event.target.value || null;
@@ -1911,21 +1929,21 @@ export function PostreApp() {
             {showAppMenu ? (
               <div className="absolute right-0 top-full z-50 mt-1 w-56 origin-top-right rounded border border-slate-200 bg-white py-1 shadow-lg">
                 <button
-                  className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                  className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100"
                   onClick={handleExport}
                 >
                   <Download size={15} />
                   Export all to Postman
                 </button>
                 <button
-                  className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                  className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100"
                   onClick={openCookies}
                 >
                   <Cookie size={15} />
                   Manage cookies
                 </button>
                 <button
-                  className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                  className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100"
                   onClick={() => {
                     setShowEnvironmentsPanel((current) => !current);
                     setShowAppMenu(false);
@@ -1941,6 +1959,7 @@ export function PostreApp() {
       </header>
 
       <div ref={collectionsSplitRef} className="flex min-h-0 flex-1 overflow-hidden">
+        {showSidebar ? (<>
         <aside
           className="flex min-h-0 shrink-0 flex-col border-r border-slate-200 bg-white"
           style={{
@@ -1962,10 +1981,10 @@ export function PostreApp() {
                   : undefined
               }
             >
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200 px-3">
+              <div className="flex h-8 shrink-0 items-center justify-between border-b border-slate-200 px-2">
                 <button
                   type="button"
-                  className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
                   onClick={() => setShowCollectionsPanel((current) => !current)}
                   aria-expanded={showCollectionsPanel}
                   aria-label={showCollectionsPanel ? "Collapse collections panel" : "Expand collections panel"}
@@ -1994,35 +2013,7 @@ export function PostreApp() {
 
               {showCollectionsPanel ? (
                 <>
-                  <div className="flex shrink-0 items-center justify-end gap-1 border-b border-slate-200 px-3 py-1">
-                    <button
-                      type="button"
-                      className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-slate-500 hover:bg-slate-100"
-                      onClick={() => {
-                        if (!data) return;
-                        const allCollapsed = data.collections.every((c) => !(expandedCollections[c.id] ?? true));
-                        const newValue = !allCollapsed;
-                        const allExpanded: Record<string, boolean> = {};
-                        function visitFolders(folders: ApiFolder[]) {
-                          for (const f of folders) {
-                            allExpanded[f.id] = newValue;
-                            visitFolders(f.children);
-                          }
-                        }
-                        for (const c of data.collections) {
-                          allExpanded[c.id] = newValue;
-                          visitFolders(c.folders);
-                        }
-                        setExpandedCollections(allExpanded);
-                        setExpandedFolders(allExpanded);
-                      }}
-                      title="Toggle collapse all"
-                    >
-                      <ChevronUp size={12} className="inline" />
-                      <ChevronDown size={12} className="inline" />
-                    </button>
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-auto p-2">
+                  <div className="min-h-0 flex-1 overflow-auto p-1">
                     {!data ? (
                       <LoadingBlock label="Loading collections" />
                     ) : data.collections.length === 0 ? (
@@ -2146,10 +2137,10 @@ export function PostreApp() {
               ) : null}
 
             <section className={`flex min-h-0 flex-col ${showEnvironmentsPanel ? "flex-1" : "shrink-0"}`}>
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200 px-3">
+              <div className="flex h-8 shrink-0 items-center justify-between border-b border-slate-200 px-2">
                 <button
                   type="button"
-                  className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
                   onClick={() => setShowEnvironmentsPanel((current) => !current)}
                   aria-expanded={showEnvironmentsPanel}
                   aria-label={showEnvironmentsPanel ? "Collapse environments panel" : "Expand environments panel"}
@@ -2171,7 +2162,7 @@ export function PostreApp() {
               </div>
 
               {showEnvironmentsPanel ? (
-                <div className="min-h-0 flex-1 overflow-auto p-2">
+                <div className="min-h-0 flex-1 overflow-auto p-1">
                   {!data ? (
                     <LoadingBlock label="Loading environments" />
                   ) : data.environments.length === 0 ? (
@@ -2207,8 +2198,9 @@ export function PostreApp() {
           aria-label="Resize sidebar"
           title="Drag to resize sidebar"
         >
-          <span className="my-auto h-14 w-1 rounded-full bg-slate-300 transition group-hover:bg-teal-400" />
+          <span className="my-auto h-12 w-1 rounded-full bg-slate-300 transition group-hover:bg-teal-400" />
         </button>
+        </>) : null}
 
         <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]">
           <div className={mainPanelMode === "request" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}>
@@ -2239,6 +2231,7 @@ export function PostreApp() {
                     onDelete={() => void deleteRequest()}
                   />
                 </div>
+                {showResponsePanel ? (<>
                 <button
                   className="group flex h-3 shrink-0 items-center justify-center border-y border-slate-200 bg-[var(--surface-3)] transition hover:bg-teal-50 active:bg-teal-100"
                   onPointerDown={beginResponseResize}
@@ -2256,6 +2249,7 @@ export function PostreApp() {
                 >
                   <ResponsePanel response={response} body={responseBody} busy={busy} />
                 </div>
+                </>) : null}
               </div>
             ) : selectedSidebarFolder ? (
               <ScriptScopeEditor
@@ -2309,7 +2303,7 @@ export function PostreApp() {
       </div>
 
       {notice ? (
-        <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded bg-slate-950 px-4 py-2 text-sm text-white shadow-lg">
+        <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded bg-slate-950 px-4 py-1.5 text-sm text-white shadow-lg">
           <button className="absolute inset-0" onClick={() => setNotice(null)} aria-label="Dismiss notice" />
           {notice}
         </div>
@@ -2503,7 +2497,7 @@ function RequestTabStrip({
   }, []);
 
   return (
-    <div className="flex h-11 shrink-0 items-end border-b border-slate-200 bg-slate-100 pl-2 pt-2">
+    <div className="flex h-10 shrink-0 items-end border-b border-slate-200 bg-slate-100 pl-2 pt-2">
       <div
         ref={scrollerRef}
         className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -2517,7 +2511,7 @@ function RequestTabStrip({
             <div
               key={tab.tabId}
               data-request-tab-id={tab.tabId}
-              className={`group flex h-9 w-56 shrink-0 items-center rounded-t border px-2 text-sm transition ${
+              className={`group flex h-8 w-56 shrink-0 items-center rounded-t border px-2 text-sm transition ${
                 active
                   ? "border-slate-200 border-b-white bg-white text-slate-900 shadow-sm"
                   : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-white"
@@ -2558,7 +2552,7 @@ function RequestTabStrip({
         })}
         </div>
       </div>
-      <div className="flex h-9 shrink-0 items-center gap-1 border-l border-slate-200 bg-slate-100 px-2">
+      <div className="flex h-8 shrink-0 items-center gap-1 border-l border-slate-200 bg-slate-100 px-2">
         <button
           type="button"
           className="flex h-7 w-7 items-center justify-center rounded border border-slate-300 bg-white text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:bg-slate-50"
@@ -2739,13 +2733,13 @@ function ScriptScopeEditor({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 px-4">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200 px-4">
         <div className="min-w-0">
           <div className="text-xs font-semibold uppercase text-slate-500">{scopeLabel}</div>
           <h2 className="truncate text-sm font-semibold text-slate-800">{title}</h2>
         </div>
         <button
-          className="inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-8 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
           onClick={() => void saveScripts()}
           disabled={saving || !dirty}
           type="button"
@@ -2754,7 +2748,7 @@ function ScriptScopeEditor({
           Save
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="min-h-0 flex-1 overflow-auto p-2">
         <EditorSection title="Scripts">
           <ScriptTextEditor
             activeScriptTab={activeScriptTab}
@@ -2786,7 +2780,7 @@ function ScriptTextEditor({
   onPostRequestScriptChange: (script: string) => void;
 }) {
   return (
-    <div className="grid gap-3">
+    <div className="grid gap-2">
       <div className="inline-flex w-fit rounded border border-slate-200 bg-slate-50 p-1">
         {SCRIPT_TABS.map((tab) => {
           const active = activeScriptTab === tab;
@@ -2812,7 +2806,7 @@ function ScriptTextEditor({
         <label className="grid gap-2">
           <span className="text-xs font-semibold uppercase text-slate-500">Pre-request</span>
           <textarea
-            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
+            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-2 font-mono text-xs leading-5 text-slate-900"
             value={preRequestScript}
             onChange={(event) => onPreRequestScriptChange(event.target.value)}
             spellCheck={false}
@@ -2823,7 +2817,7 @@ function ScriptTextEditor({
         <label className="grid gap-2">
           <span className="text-xs font-semibold uppercase text-slate-500">Post-request</span>
           <textarea
-            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
+            className="min-h-72 resize-y rounded border border-slate-300 bg-white p-2 font-mono text-xs leading-5 text-slate-900"
             value={postRequestScript}
             onChange={(event) => onPostRequestScriptChange(event.target.value)}
             spellCheck={false}
@@ -2858,7 +2852,7 @@ function RequestEditor({
 }) {
   const [activeTab, setActiveTab] = useState<RequestTab | null>("body");
   const [activeScriptTab, setActiveScriptTab] = useState<ScriptTab>("pre-request");
-  const [showCodePanel, setShowCodePanel] = useState(true);
+  const [showCodePanel, setShowCodePanel] = useState(false);
   const [showSendMenu, setShowSendMenu] = useState(false);
   const [curlError, setCurlError] = useState<string | null>(null);
   const [curlNotice, setCurlNotice] = useState<string | null>(null);
@@ -2934,8 +2928,8 @@ function RequestEditor({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col border-b border-slate-200 bg-white">
-      <div className="border-b border-slate-200 p-4">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="border-b border-slate-200 px-2 py-1">
+        <div className="mb-1 flex flex-wrap items-center gap-1.5">
           <div className="min-w-0 flex-1 overflow-x-auto">
             <div className="flex min-w-max gap-2">
               {REQUEST_TABS.map((tab) => {
@@ -2954,7 +2948,7 @@ function RequestEditor({
                 return (
                   <button
                     key={tab}
-                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                    className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${
                       active
                         ? "border-teal-600 bg-teal-600 text-white"
                         : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
@@ -2976,9 +2970,9 @@ function RequestEditor({
           </IconButton>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-1.5">
           <select
-            className="h-11 w-32 rounded border border-slate-300 bg-white px-3 text-sm font-semibold text-teal-700"
+            className="h-9 w-28 rounded border border-slate-300 bg-white px-2 text-sm font-semibold text-teal-700"
             value={draft.method}
             onChange={(event) => onChange({ ...draft, method: event.target.value as HttpMethod })}
             aria-label="HTTP method"
@@ -2991,7 +2985,7 @@ function RequestEditor({
           </select>
           <div className="relative min-w-0 flex-1">
             <TokenizedField
-              className="min-h-[2.75rem] py-2.5 leading-6"
+              className="min-h-[2.25rem] py-1.5 leading-6"
               value={draft.url}
               onChange={(value) => onChange({ ...draft, url: value })}
               placeholder="{{baseUrl}}/users"
@@ -3006,7 +3000,7 @@ function RequestEditor({
           </div>
           {busy ? (
             <button
-              className="inline-flex h-11 items-center gap-2 rounded border border-rose-300 bg-white px-4 text-sm font-semibold text-rose-700 hover:bg-rose-50"
+              className="inline-flex h-9 items-center gap-2 rounded border border-rose-300 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50"
               onClick={onCancel}
               type="button"
             >
@@ -3016,7 +3010,7 @@ function RequestEditor({
           ) : (
             <div className="send-button-group relative flex">
               <button
-                className="inline-flex h-11 items-center gap-2 rounded-l bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-9 items-center gap-2 rounded-l bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={onSend}
                 disabled={!draft.url.trim()}
                 type="button"
@@ -3025,7 +3019,7 @@ function RequestEditor({
                 Send
               </button>
               <button
-                className="flex h-11 w-7 items-center justify-center rounded-r bg-teal-600 text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex h-9 w-7 items-center justify-center rounded-r bg-teal-600 text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => setShowSendMenu((current) => !current)}
                 type="button"
                 disabled={!draft.url.trim()}
@@ -3060,8 +3054,8 @@ function RequestEditor({
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="min-h-0 flex-1 overflow-auto p-4">
-          <div className="grid gap-4">
+        <div className="min-h-0 flex-1 overflow-auto p-1.5">
+          <div className="grid gap-1.5">
             {activeTab ? (
               <>
                 {activeTab === "auth" ? (
@@ -3098,12 +3092,24 @@ function RequestEditor({
                 ) : null}
 
                 {activeTab === "body" ? (
-                  <section className="rounded border border-slate-200 bg-white p-3 shadow-panel">
-                    <div className="mb-3 flex items-center justify-between">
+                  <section className="rounded border border-slate-200 bg-white p-2 shadow-panel">
+                    <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                       <h2 className="text-sm font-semibold text-slate-700">Body</h2>
+                      {(["none", "raw_json", "raw_text", "form_urlencoded", "multipart"] as const).map((mode) => (
+                        <label key={mode} className="flex cursor-pointer items-center gap-1 text-xs">
+                          <input
+                            type="radio"
+                            name="bodyMode"
+                            className="text-teal-600 accent-teal-600"
+                            checked={draft.bodyMode === mode}
+                            onChange={() => onChange({ ...draft, bodyMode: mode })}
+                          />
+                          {mode === "none" ? "none" : mode === "raw_json" ? "raw JSON" : mode === "raw_text" ? "raw text" : mode === "form_urlencoded" ? "URL-encoded" : "multipart"}
+                        </label>
+                      ))}
                       {draft.bodyMode === "raw_json" && draft.bodyRaw.trim() ? (
                         <button
-                          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100"
+                          className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold text-slate-500 hover:bg-slate-100"
                           onClick={() => {
                             try {
                               const formatted = JSON.stringify(JSON.parse(draft.bodyRaw), null, 2);
@@ -3115,25 +3121,11 @@ function RequestEditor({
                           type="button"
                         >
                           <FileJson size={14} />
-                          Format JSON
+                          Format
                         </button>
                       ) : null}
                     </div>
-                    <div className="mb-3 flex flex-wrap items-center gap-3">
-                      {(["none", "raw_json", "raw_text", "form_urlencoded", "multipart"] as const).map((mode) => (
-                        <label key={mode} className="flex cursor-pointer items-center gap-1.5 text-sm">
-                          <input
-                            type="radio"
-                            name="bodyMode"
-                            className="text-teal-600 accent-teal-600"
-                            checked={draft.bodyMode === mode}
-                            onChange={() => onChange({ ...draft, bodyMode: mode })}
-                          />
-                          {mode === "none" ? "none" : mode === "raw_json" ? "raw JSON" : mode === "raw_text" ? "raw text" : mode === "form_urlencoded" ? "URL-encoded" : "multipart"}
-                        </label>
-                      ))}
-                    </div>
-                    <div className="grid gap-3">
+                    <div className="grid gap-2">
                       <TokenizedField
                         className="resize-y"
                         value={draft.bodyRaw}
@@ -3211,8 +3203,8 @@ function CurlCodePanel({
   }
 
   return (
-    <aside className="flex min-h-[360px] min-w-0 flex-col gap-3 border-t border-slate-200 bg-slate-50 p-4 lg:min-h-0 lg:w-[360px] lg:shrink-0 lg:border-l lg:border-t-0">
-      <div className="flex items-center justify-between gap-3">
+    <aside className="flex min-h-[360px] min-w-0 flex-col gap-2 border-t border-slate-200 bg-slate-50 p-2 lg:min-h-0 lg:w-[360px] lg:shrink-0 lg:border-l lg:border-t-0">
+      <div className="flex items-center justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold text-slate-700">Code</h2>
           <p className="text-xs text-slate-500">cURL</p>
@@ -3228,7 +3220,7 @@ function CurlCodePanel({
       </div>
 
       <textarea
-        className="min-h-40 w-full flex-1 resize-y rounded border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-900"
+        className="min-h-40 w-full flex-1 resize-y rounded border border-slate-300 bg-white p-2 font-mono text-xs leading-5 text-slate-900"
         value={generatedCurl}
         onPaste={handlePaste}
         readOnly
@@ -3236,12 +3228,12 @@ function CurlCodePanel({
       />
 
       {curlError ? (
-        <p className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+        <p className="rounded border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700">
           {curlError}
         </p>
       ) : null}
       {curlNotice ? (
-        <p className="rounded border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-medium text-teal-800">
+        <p className="rounded border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-800">
           {curlNotice}
         </p>
       ) : null}
@@ -3261,9 +3253,9 @@ function AuthEditor({
   const type = auth.type;
 
   return (
-    <div className="grid gap-3">
+    <div className="grid gap-2">
       <select
-        className="h-9 w-48 rounded border border-slate-300 bg-white px-3 text-sm"
+        className="h-8 w-48 rounded border border-slate-300 bg-white px-3 text-sm"
         value={type}
         onChange={(event) => onChange({ type: event.target.value as AuthConfig["type"] })}
       >
@@ -3320,7 +3312,7 @@ function AuthEditor({
             variableLookup={variableLookup}
           />
           <select
-            className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+            className="h-8 rounded border border-slate-300 bg-white px-3 text-sm"
             value={auth.placement ?? "header"}
             onChange={(event) =>
               onChange({
@@ -3336,7 +3328,7 @@ function AuthEditor({
       ) : null}
 
       {type === "unsupported" ? (
-        <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <p className="rounded border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm text-amber-800">
           Imported auth was preserved as metadata but cannot be executed yet.
         </p>
       ) : null}
@@ -3395,7 +3387,7 @@ function KeyValueTable({
         >
           <input
             type="checkbox"
-            className="h-9 w-5"
+            className="h-8 w-5"
             checked={row.enabled}
             onChange={(event) => updateRow(index, { enabled: event.target.checked })}
             aria-label="Enabled"
@@ -3421,7 +3413,7 @@ function KeyValueTable({
       ))}
 
       <button
-        className="inline-flex h-9 w-fit items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50"
+        className="inline-flex h-8 w-fit items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50"
         onClick={() => onChange([...rows, { key: "", value: "", enabled: true, isSecret: false }])}
         type="button"
       >
@@ -3438,7 +3430,7 @@ function AutoHeadersDisplay({ draft }: { draft: RequestDraft }) {
   if (autoHeaders.length === 0) return null;
 
   return (
-    <div className="mt-3 rounded border border-dashed border-slate-200 bg-slate-50 px-3 py-2">
+    <div className="mt-2 rounded border border-dashed border-slate-200 bg-slate-50 px-3 py-1.5">
       <p className="mb-2 text-xs font-semibold uppercase text-slate-400">Auto-generated</p>
       <div className="grid gap-1">
         {autoHeaders.map((header) => (
@@ -3893,7 +3885,7 @@ function EnvironmentTreeItem({
 
   return (
     <div
-      className={`mb-1 w-full rounded px-3 py-2 text-left text-sm ${
+      className={`mb-1 w-full rounded px-3 py-1.5 text-left text-sm ${
         selected ? "bg-teal-50 font-semibold text-teal-800" : "hover:bg-slate-50"
       }`}
     >
@@ -4009,13 +4001,13 @@ function CollectionRunnerModal({
 
   return (
     <Modal title={`Run ${target.type}: ${target.name}`} onClose={onClose}>
-      <div className="grid max-h-[78vh] min-h-[560px] grid-cols-[340px_minmax(520px,1fr)] gap-4 overflow-hidden">
-        <aside className="min-h-0 overflow-auto rounded border border-slate-200 bg-slate-50 p-3">
-          <div className="grid gap-3">
+      <div className="grid max-h-[78vh] min-h-[560px] grid-cols-[340px_minmax(520px,1fr)] gap-2 overflow-hidden">
+        <aside className="min-h-0 overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
+          <div className="grid gap-2">
             <label className="grid gap-1 text-sm">
               <span className="font-semibold text-slate-700">Environment</span>
               <select
-                className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+                className="h-8 rounded border border-slate-300 bg-white px-3 text-sm"
                 value={environmentId}
                 onChange={(event) => setEnvironmentId(event.target.value)}
               >
@@ -4028,14 +4020,14 @@ function CollectionRunnerModal({
               </select>
             </label>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-2">
               <label className="grid gap-1 text-sm">
                 <span className="font-semibold text-slate-700">Iterations</span>
                 <input
                   type="number"
                   min={1}
                   max={100}
-                  className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+                  className="h-8 rounded border border-slate-300 bg-white px-3 text-sm"
                   value={iterations}
                   onChange={(event) => setIterations(clamp(Number(event.target.value) || 1, 1, 100))}
                 />
@@ -4046,14 +4038,14 @@ function CollectionRunnerModal({
                   type="number"
                   min={0}
                   max={60000}
-                  className="h-9 rounded border border-slate-300 bg-white px-3 text-sm"
+                  className="h-8 rounded border border-slate-300 bg-white px-3 text-sm"
                   value={delayMs}
                   onChange={(event) => setDelayMs(clamp(Number(event.target.value) || 0, 0, 60000))}
                 />
               </label>
             </div>
 
-            <label className="flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm">
+            <label className="flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-1.5 text-sm">
               <input
                 type="checkbox"
                 checked={stopOnError}
@@ -4063,7 +4055,7 @@ function CollectionRunnerModal({
             </label>
 
             <div className="rounded border border-slate-200 bg-white">
-              <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
+              <div className="flex items-center justify-between border-b border-slate-200 px-3 py-1.5">
                 <span className="text-sm font-semibold text-slate-700">Requests</span>
                 <span className="text-xs text-slate-500">{selectedCount} selected</span>
               </div>
@@ -4124,7 +4116,7 @@ function CollectionRunnerModal({
               {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
               Run now
             </button>
-            {error ? <div className="rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div> : null}
+            {error ? <div className="rounded border border-rose-200 bg-rose-50 p-2 text-sm text-rose-700">{error}</div> : null}
           </div>
         </aside>
 
@@ -4138,9 +4130,9 @@ function CollectionRunnerModal({
 
 function CollectionRunReportView({ report }: { report: ApiCollectionRunReport }) {
   return (
-    <div className="flex min-h-0 flex-col gap-4">
+    <div className="flex min-h-0 flex-col gap-2">
       <EditorSection title="Summary">
-        <div className="mb-3 flex flex-wrap gap-2">
+        <div className="mb-2 flex flex-wrap gap-2">
           <SummaryChip label="Status" value={report.run.status} tone={report.run.errorCount ? "amber" : "teal"} />
           <SummaryChip label="Steps" value={`${report.run.completedSteps}/${report.run.totalSteps}`} />
           <SummaryChip label="Success" value={String(report.run.successCount)} tone="teal" />
@@ -4156,9 +4148,9 @@ function CollectionRunReportView({ report }: { report: ApiCollectionRunReport })
 
       <EditorSection title="Steps">
         <div className="min-h-0 max-h-[48vh] overflow-auto pr-1">
-          <div className="grid gap-3">
+          <div className="grid gap-2">
             {report.steps.map((step) => (
-              <details key={step.id} className="group rounded border border-slate-200 bg-slate-50 p-3" open={Boolean(step.error)}>
+              <details key={step.id} className="group rounded border border-slate-200 bg-slate-50 p-2" open={Boolean(step.error)}>
                 <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
                   <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
                   <span>{step.sequence}. {step.requestName}</span>
@@ -4168,24 +4160,24 @@ function CollectionRunReportView({ report }: { report: ApiCollectionRunReport })
                   </span>
                   <span className="ml-auto text-xs text-slate-500">iteration {step.iteration}</span>
                 </summary>
-                <div className="mt-3 grid gap-3">
+                <div className="mt-2 grid gap-2">
                   <div className="flex flex-wrap gap-2">
                     {step.resolvedUrl ? <SummaryChip label="URL" value={step.resolvedUrl} /> : null}
                     {step.durationMs !== null ? <SummaryChip label="Time" value={`${step.durationMs} ms`} tone="amber" /> : null}
                     {step.sizeBytes !== null ? <SummaryChip label="Size" value={formatSize(step.sizeBytes)} /> : null}
                   </div>
                   {step.error ? (
-                    <div className="rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{step.error}</div>
+                    <div className="rounded border border-rose-200 bg-rose-50 p-2 text-sm text-rose-700">{step.error}</div>
                   ) : null}
                   {step.missingVariables.length ? (
-                    <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    <div className="rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
                       Missing variables: {step.missingVariables.join(", ")}
                     </div>
                   ) : null}
                   <ScriptResultsPanel results={step.scriptResults} />
                   {step.responseBodyPreview ? (
                     <EditorSection title="Response Preview">
-                      <pre className="max-h-60 overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+                      <pre className="max-h-60 overflow-auto rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
                         {formatBodyPreview(step.responseBodyPreview)}
                       </pre>
                     </EditorSection>
@@ -4262,15 +4254,15 @@ function EnvironmentWorkspace({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]">
-      <div className="border-b border-slate-200 bg-white p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="border-b border-slate-200 bg-white p-2">
+        <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <h2 className="text-sm font-semibold text-slate-700">Environments</h2>
             <p className="text-xs text-slate-500">Manage global and scoped variables.</p>
           </div>
           <div className="flex items-center gap-2">
             <button
-              className="inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              className="inline-flex h-8 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
               onClick={onBackToRequests}
               type="button"
             >
@@ -4278,7 +4270,7 @@ function EnvironmentWorkspace({
               Back to requests
             </button>
             <button
-              className="inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
+              className="inline-flex h-8 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
               onClick={() => void onCreateEnvironment()}
               type="button"
             >
@@ -4288,9 +4280,9 @@ function EnvironmentWorkspace({
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <select
-            className="h-9 min-w-64 rounded border border-slate-300 bg-white px-3 text-sm font-semibold"
+            className="h-8 min-w-64 rounded border border-slate-300 bg-white px-3 text-sm font-semibold"
             value={selectedEnvironmentId ?? ""}
             onChange={(event) => onSelectEnvironment(event.target.value || null)}
             aria-label="Selected environment"
@@ -4302,7 +4294,7 @@ function EnvironmentWorkspace({
             ))}
           </select>
           <button
-            className="inline-flex h-9 items-center gap-2 rounded border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-8 items-center gap-2 rounded border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
             onClick={deleteEnvironment}
             disabled={!selectedEnv}
             type="button"
@@ -4313,12 +4305,12 @@ function EnvironmentWorkspace({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        <div className="grid gap-4">
+      <div className="min-h-0 flex-1 overflow-auto p-2">
+        <div className="grid gap-2">
           <EditorSection title="Global Variables">
             <VariableTable rows={globalRows} onChange={setGlobalRows} />
             <button
-              className="mt-3 inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold hover:bg-slate-50"
+              className="mt-2 inline-flex h-8 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold hover:bg-slate-50"
               onClick={saveGlobals}
               type="button"
             >
@@ -4332,7 +4324,7 @@ function EnvironmentWorkspace({
               <>
                 <VariableTable rows={envRows} onChange={setEnvRows} />
                 <button
-                  className="mt-3 inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
+                  className="mt-2 inline-flex h-8 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
                   onClick={saveEnvironment}
                   type="button"
                 >
@@ -4341,10 +4333,10 @@ function EnvironmentWorkspace({
                 </button>
               </>
             ) : (
-              <div className="grid gap-3">
+              <div className="grid gap-2">
                 <p className="text-sm text-slate-500">Create an environment to manage scoped variables.</p>
                 <button
-                  className="inline-flex h-9 w-fit items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
+                  className="inline-flex h-8 w-fit items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
                   onClick={() => void onCreateEnvironment()}
                   type="button"
                 >
@@ -4408,12 +4400,12 @@ function VariableTable({
         >
           <input
             type="checkbox"
-            className="h-9 w-5"
+            className="h-8 w-5"
             checked={row.enabled}
             onChange={(event) => updateRow(index, { enabled: event.target.checked })}
           />
           <input
-            className="h-9 rounded border border-slate-300 px-2 font-mono text-sm"
+            className="h-8 rounded border border-slate-300 px-2 font-mono text-sm"
             value={row.key}
             onChange={(event) => updateRow(index, { key: event.target.value })}
           />
@@ -4431,7 +4423,7 @@ function VariableTable({
           />
           <input
             type="checkbox"
-            className="h-9 w-5"
+            className="h-8 w-5"
             checked={row.isSecret}
             onChange={(event) => updateRow(index, { isSecret: event.target.checked })}
           />
@@ -4441,7 +4433,7 @@ function VariableTable({
         </div>
       ))}
       <button
-        className="inline-flex h-9 w-fit items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50"
+        className="inline-flex h-8 w-fit items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50"
         onClick={() =>
           onChange([
             ...rows,
@@ -4522,8 +4514,8 @@ function ImportModal({
 
   return (
     <Modal title="Import Postman JSON" onClose={onClose}>
-      <div className="grid max-h-[78vh] min-h-[560px] grid-cols-[minmax(420px,1fr)_300px] gap-4 overflow-hidden">
-        <div className="flex min-h-0 flex-col gap-3">
+      <div className="grid max-h-[78vh] min-h-[560px] grid-cols-[minmax(420px,1fr)_300px] gap-2 overflow-hidden">
+        <div className="flex min-h-0 flex-col gap-2">
           <input
             type="file"
             accept=".json,application/json"
@@ -4531,7 +4523,7 @@ function ImportModal({
             onChange={(event) => void loadFile(event.target.files?.[0] ?? null)}
           />
           <textarea
-            className="min-h-0 flex-1 resize-none rounded border border-slate-300 p-3 font-mono text-xs"
+            className="min-h-0 flex-1 resize-none rounded border border-slate-300 p-2 font-mono text-xs"
             value={rawText}
             onChange={(event) => {
               setRawText(event.target.value);
@@ -4541,7 +4533,7 @@ function ImportModal({
           />
           <div className="flex gap-2">
             <button
-              className="inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50"
               onClick={previewImport}
               disabled={busy || !rawText.trim()}
             >
@@ -4549,7 +4541,7 @@ function ImportModal({
               Preview
             </button>
             <button
-              className="inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
               onClick={importJson}
               disabled={busy || !preview || preview.type === "unknown"}
             >
@@ -4558,8 +4550,8 @@ function ImportModal({
             </button>
           </div>
         </div>
-        <aside className="overflow-auto rounded border border-slate-200 bg-slate-50 p-3">
-          <h3 className="mb-3 text-sm font-semibold">Preview</h3>
+        <aside className="overflow-auto rounded border border-slate-200 bg-slate-50 p-2">
+          <h3 className="mb-2 text-sm font-semibold">Preview</h3>
           {error ? <p className="rounded bg-rose-50 p-2 text-sm text-rose-700">{error}</p> : null}
           {preview ? (
             <div className="grid gap-2 text-sm">
@@ -4677,10 +4669,10 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
   const displayedBody = highlightedBody ?? body;
 
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-2">
       <ScriptResultsPanel results={response.scriptResults ?? []} />
       <EditorSection title="Response Body">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
             {(["pretty", "edit"] as const).map((mode) => {
               const active = bodyViewMode === mode;
@@ -4752,7 +4744,7 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
             currentSearchMatch={currentBodySearchMatch}
           />
         ) : (
-          <pre ref={bodyRef} className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+          <pre ref={bodyRef} className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
             {displayedBody}
           </pre>
         )}
@@ -4775,7 +4767,7 @@ function ResponsePanel({
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-t border-slate-200 bg-white">
-      <div className="flex h-12 items-center gap-3 border-b border-slate-200 px-4">
+      <div className="flex h-8 items-center gap-2 border-b border-slate-200 px-3">
         <span className="shrink-0 text-sm font-semibold text-slate-700">Response</span>
         {responseSummary ? (
           <ResponseSummary response={responseSummary} onOpenHeaders={() => setShowHeadersModal(true)} />
@@ -4787,7 +4779,7 @@ function ResponsePanel({
         ) : null}
         <div className="ml-auto shrink-0">{busy ? <Loader2 className="animate-spin text-teal-600" size={18} /> : null}</div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="min-h-0 flex-1 overflow-auto p-1.5">
         {response ? (
           "error" in response ? (
             <ErrorResponse response={response} />
@@ -4809,20 +4801,20 @@ function ErrorResponse({
   response: SendErrorResponseState;
 }) {
   return (
-    <div className="grid gap-3">
+    <div className="grid gap-2">
       <ScriptResultsPanel results={response.scriptResults ?? []} />
-      <div className="rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+      <div className="rounded border border-rose-200 bg-rose-50 p-2 text-sm text-rose-700">
         <div className="font-semibold">{response.error}</div>
         {response.durationMs ? <div>{response.durationMs} ms</div> : null}
       </div>
       {response.missingVariables?.length ? (
-        <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        <div className="rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
           Missing variables: {response.missingVariables.join(", ")}
         </div>
       ) : null}
       {response.resolvedDraft ? (
         <EditorSection title="Resolved Draft">
-          <pre className="rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+          <pre className="rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
             {JSON.stringify(response.resolvedDraft, null, 2)}
           </pre>
         </EditorSection>
@@ -4841,7 +4833,7 @@ function ScriptResultsPanel({ results }: { results: ScriptExecutionResult[] }) {
       {results.map((result, index) => (
         <details
           key={`${result.phase}-${result.source ?? "request"}-${index}`}
-          className={`group rounded border p-3 ${
+          className={`group rounded border p-2 ${
             result.ok ? "border-teal-200 bg-teal-50" : "border-rose-200 bg-rose-50"
           }`}
           open={!result.ok}
@@ -4855,10 +4847,10 @@ function ScriptResultsPanel({ results }: { results: ScriptExecutionResult[] }) {
             <span>{result.source ? `${result.source}` : result.phase}</span>
             <span>{result.ok ? "ok" : "failed"}</span>
           </summary>
-          <div className="mt-3 grid gap-2">
+          <div className="mt-2 grid gap-2">
             {result.error ? <div className="text-sm font-medium text-rose-700">{result.error}</div> : null}
             {result.logs.length ? (
-              <pre className="max-h-48 overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+              <pre className="max-h-48 overflow-auto rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
                 {result.logs.join("\n")}
               </pre>
             ) : (
@@ -4912,7 +4904,7 @@ function ResponseHeadersModal({
 
   return (
     <Modal title={`Response Headers (${headers.length})`} onClose={onClose}>
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-2 flex items-center gap-2">
         <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
           {([false, true] as const).map((raw) => {
             const active = rawView === raw;
@@ -4931,7 +4923,7 @@ function ResponseHeadersModal({
       </div>
       {headers.length ? (
         rawView ? (
-          <pre className="max-h-[65vh] overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-50">
+          <pre className="max-h-[65vh] overflow-auto rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
             {headers.map((header) => `${header.key}: ${header.value}`).join("\n")}
           </pre>
         ) : (
@@ -4939,7 +4931,7 @@ function ResponseHeadersModal({
             {headers.map((header) => (
               <div
                 key={`${header.key}-${header.value}`}
-                className="grid gap-1 rounded border border-slate-200 bg-slate-50 p-3 md:grid-cols-[180px_1fr] md:gap-3"
+                className="grid gap-1 rounded border border-slate-200 bg-slate-50 p-2 md:grid-cols-[180px_1fr] md:gap-2"
               >
                 <span className="font-semibold text-slate-700">{header.key}</span>
                 <span className="break-all font-mono text-xs text-slate-700 md:text-sm">{header.value}</span>
@@ -4964,15 +4956,15 @@ function Modal({
   onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
       <div className="w-full max-w-5xl rounded bg-white shadow-2xl">
-        <div className="flex h-12 items-center justify-between border-b border-slate-200 px-4">
+        <div className="flex h-10 items-center justify-between border-b border-slate-200 px-4">
           <h2 className="text-sm font-semibold">{title}</h2>
           <button className="rounded px-2 py-1 text-sm text-slate-500 hover:bg-slate-100" onClick={onClose}>
             Close
           </button>
         </div>
-        <div className="p-4">{children}</div>
+        <div className="p-2">{children}</div>
       </div>
     </div>
   );
@@ -5037,15 +5029,15 @@ function CookiesModal({
 
   return (
     <Modal title={`Cookies (${cookies.length})`} onClose={onClose}>
-      <div className="flex max-h-[70vh] flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
+      <div className="flex max-h-[70vh] flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
           <div className="text-sm text-slate-500">
             Cookies captured from response headers are sent automatically on matching requests.
           </div>
           <div className="flex shrink-0 gap-2">
             <button
               type="button"
-              className="inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => void loadCookies()}
               disabled={loading}
             >
@@ -5054,7 +5046,7 @@ function CookiesModal({
             </button>
             <button
               type="button"
-              className="inline-flex h-9 items-center gap-2 rounded border border-red-200 bg-red-50 px-3 text-sm text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-2 rounded border border-red-200 bg-red-50 px-3 text-sm text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => void clearAllCookies()}
               disabled={!cookies.length || clearing}
             >
@@ -5071,34 +5063,34 @@ function CookiesModal({
             <table className="min-w-full text-left text-sm">
               <thead className="sticky top-0 bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
-                  <th className="px-3 py-2 font-semibold">Name</th>
-                  <th className="px-3 py-2 font-semibold">Value</th>
-                  <th className="px-3 py-2 font-semibold">Domain</th>
-                  <th className="px-3 py-2 font-semibold">Path</th>
-                  <th className="px-3 py-2 font-semibold">Expires</th>
-                  <th className="px-3 py-2 font-semibold">Flags</th>
-                  <th className="w-12 px-2 py-2" />
+                  <th className="px-3 py-1.5 font-semibold">Name</th>
+                  <th className="px-3 py-1.5 font-semibold">Value</th>
+                  <th className="px-3 py-1.5 font-semibold">Domain</th>
+                  <th className="px-3 py-1.5 font-semibold">Path</th>
+                  <th className="px-3 py-1.5 font-semibold">Expires</th>
+                  <th className="px-3 py-1.5 font-semibold">Flags</th>
+                  <th className="w-12 px-2 py-1.5" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {cookies.map((cookie) => (
                   <tr key={cookie.id} className="align-top">
-                    <td className="max-w-44 px-3 py-2 font-mono font-semibold text-slate-800">
+                    <td className="max-w-44 px-3 py-1.5 font-mono font-semibold text-slate-800">
                       <span className="block truncate" title={cookie.name}>{cookie.name}</span>
                     </td>
-                    <td className="max-w-60 px-3 py-2 font-mono text-slate-600">
+                    <td className="max-w-60 px-3 py-1.5 font-mono text-slate-600">
                       <span className="block truncate" title={cookie.value}>{cookie.value}</span>
                     </td>
-                    <td className="max-w-52 px-3 py-2 text-slate-700">
+                    <td className="max-w-52 px-3 py-1.5 text-slate-700">
                       <span className="block truncate" title={cookie.domain}>
                         {cookie.hostOnly ? cookie.domain : `.${cookie.domain}`}
                       </span>
                     </td>
-                    <td className="px-3 py-2 font-mono text-slate-600">{cookie.path}</td>
-                    <td className="px-3 py-2 text-slate-600">
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{cookie.path}</td>
+                    <td className="px-3 py-1.5 text-slate-600">
                       {cookie.expiresAt ? formatDateTime(cookie.expiresAt) : "Session"}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-1.5">
                       <div className="flex flex-wrap gap-1">
                         {cookie.httpOnly ? <CookieFlag label="HttpOnly" /> : null}
                         {cookie.secure ? <CookieFlag label="Secure" /> : null}
@@ -5106,7 +5098,7 @@ function CookiesModal({
                         {cookie.hostOnly ? <CookieFlag label="Host only" /> : null}
                       </div>
                     </td>
-                    <td className="px-2 py-2 text-right">
+                    <td className="px-2 py-1.5 text-right">
                       <IconButton label={`Delete ${cookie.name}`} onClick={() => void removeCookie(cookie)}>
                         {busyCookieId === cookie.id ? <Loader2 className="animate-spin" size={15} /> : <Trash2 size={15} />}
                       </IconButton>
@@ -5142,21 +5134,21 @@ function ConfirmDialog({
   onCancel: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
       <div className="w-full max-w-sm rounded bg-white shadow-2xl">
-        <div className="p-6">
+        <div className="p-4">
           <p className="text-sm text-slate-700">{message}</p>
           <div className="mt-6 flex justify-end gap-2">
             <button
               type="button"
-              className="h-9 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+              className="h-8 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
               onClick={onCancel}
             >
               Cancel
             </button>
             <button
               type="button"
-              className="h-9 rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700"
+              className="h-8 rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700"
               onClick={onConfirm}
             >
               Delete
@@ -5188,14 +5180,14 @@ function PromptDialog({
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
       <div className="w-full max-w-sm rounded bg-white shadow-2xl">
-        <div className="p-6">
-          <p className="mb-3 text-sm text-slate-700">{message}</p>
+        <div className="p-4">
+          <p className="mb-2 text-sm text-slate-700">{message}</p>
           <input
             ref={inputRef}
             type="text"
-            className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+            className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
             value={value}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
@@ -5209,14 +5201,14 @@ function PromptDialog({
           <div className="mt-4 flex justify-end gap-2">
             <button
               type="button"
-              className="h-9 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+              className="h-8 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
               onClick={onCancel}
             >
               Cancel
             </button>
             <button
               type="button"
-              className="h-9 rounded bg-teal-600 px-4 text-sm text-white hover:bg-teal-700 disabled:opacity-50"
+              className="h-8 rounded bg-teal-600 px-4 text-sm text-white hover:bg-teal-700 disabled:opacity-50"
               onClick={() => onConfirm(value)}
               disabled={!value}
             >
@@ -5231,8 +5223,8 @@ function PromptDialog({
 
 function EditorSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded border border-slate-200 bg-white p-3 shadow-panel">
-      <h2 className="mb-3 text-sm font-semibold text-slate-700">{title}</h2>
+    <section className="rounded border border-slate-200 bg-white p-1.5 shadow-panel">
+      <h2 className="mb-1 text-sm font-semibold text-slate-700">{title}</h2>
       {children}
     </section>
   );
@@ -5249,7 +5241,7 @@ function IconButton({
 }) {
   return (
     <button
-      className="inline-flex h-9 w-9 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+      className="inline-flex h-8 w-8 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
       onClick={onClick}
       title={label}
       aria-label={label}
@@ -5292,10 +5284,10 @@ function EmptyState({
   onAction: () => void;
 }) {
   return (
-    <div className="grid justify-items-center gap-3 text-center">
+    <div className="grid justify-items-center gap-2 text-center">
       <p className="text-sm font-semibold text-slate-700">{title}</p>
       <button
-        className="inline-flex h-9 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
+        className="inline-flex h-8 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
         onClick={onAction}
       >
         <Plus size={15} />
@@ -5307,7 +5299,7 @@ function EmptyState({
 
 function LoadingBlock({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-2 px-2 py-3 text-sm text-slate-500">
+    <div className="flex items-center gap-2 px-2 py-1.5 text-sm text-slate-500">
       <Loader2 className="animate-spin" size={16} />
       {label}
     </div>
@@ -5363,7 +5355,7 @@ function SecretInput({
   if (isSecret && !showSecrets) {
     return (
       <input
-        className="h-9 rounded border border-slate-300 px-2 font-mono text-sm"
+        className="h-8 rounded border border-slate-300 px-2 font-mono text-sm"
         value={maskSecret(value)}
         readOnly
       />
@@ -5758,7 +5750,7 @@ function PrettyBody({
   const hasSearch = !!searchQuery && !!searchResults && searchResults.length > 0;
 
   return (
-    <pre className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-50">
+    <pre className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-950 p-2 font-mono text-xs leading-5 text-slate-50">
       {hasSearch ? (
         renderPrettyWithSearch(formatted, searchQuery!, searchResults!, currentSearchMatch ?? 0)
       ) : language === "text" ? (
