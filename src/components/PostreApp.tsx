@@ -2322,6 +2322,7 @@ className="inline-flex h-8 w-8 items-center justify-center rounded border border
 
       {showCookies ? <CookiesModal onClose={() => setShowCookies(false)} onNotice={setNotice} /> : null}
 
+
       {requestTabMenu ? (
         <RequestTabContextMenu
           menu={requestTabMenu}
@@ -2858,6 +2859,59 @@ function RequestEditor({
   const [curlNotice, setCurlNotice] = useState<string | null>(null);
   const generatedCurl = useMemo(() => requestDraftToCurl(draft), [draft]);
 
+  // Build the display URL from base URL + enabled query params
+  const displayUrl = useMemo(() => {
+    const enabledParams = draft.queryParams.filter((r) => r.enabled && r.key.trim());
+    if (enabledParams.length === 0) return draft.url;
+    const qs = enabledParams
+      .map((r) => (r.value ? `${r.key.trim()}=${r.value}` : r.key.trim()))
+      .join("&");
+    // If url already ends with ?, just append; otherwise add ?
+    if (draft.url.endsWith("?")) return `${draft.url}${qs}`;
+    const sep = draft.url.includes("?") ? "&" : "?";
+    return `${draft.url}${sep}${qs}`;
+  }, [draft.url, draft.queryParams]);
+
+  // When the user edits the URL bar, parse out query params and sync
+  const handleUrlChange = useCallback(
+    (fullUrl: string) => {
+      const qIndex = fullUrl.indexOf("?");
+      if (qIndex === -1) {
+        // No query string — keep only disabled params
+        const disabledParams = draft.queryParams.filter((r) => !r.enabled);
+        onChange({ ...draft, url: fullUrl, queryParams: disabledParams });
+        return;
+      }
+      const baseUrl = fullUrl.slice(0, qIndex);
+      const queryString = fullUrl.slice(qIndex + 1);
+      // Parse params from the query string
+      const parsedParams: KeyValueRow[] = queryString
+        .split("&")
+        .filter((part) => part.length > 0)
+        .map((part) => {
+          const eqIndex = part.indexOf("=");
+          if (eqIndex === -1) return { key: part, value: "", enabled: true };
+          return { key: part.slice(0, eqIndex), value: part.slice(eqIndex + 1), enabled: true };
+        });
+      // Preserve disabled params from the table
+      const disabledParams = draft.queryParams.filter((r) => !r.enabled);
+      // Keep trailing ? when user is still typing the query string
+      const effectiveUrl = parsedParams.length === 0 && queryString === "" ? `${baseUrl}?` : baseUrl;
+      onChange({ ...draft, url: effectiveUrl, queryParams: [...parsedParams, ...disabledParams] });
+    },
+    [draft, onChange]
+  );
+
+  // When query params change from the table, update them (displayUrl auto-recomputes)
+  const handleQueryParamsChange = useCallback(
+    (queryParams: KeyValueRow[]) => {
+      // Strip trailing ? from URL if params are managed via the table
+      const url = draft.url.endsWith("?") ? draft.url.slice(0, -1) : draft.url;
+      onChange({ ...draft, url, queryParams });
+    },
+    [draft, onChange]
+  );
+
   useEffect(() => {
     setCurlError(null);
     setCurlNotice(null);
@@ -2986,8 +3040,8 @@ function RequestEditor({
           <div className="relative min-w-0 flex-1">
             <TokenizedField
               className="min-h-[2.25rem] py-1.5 leading-6"
-              value={draft.url}
-              onChange={(value) => onChange({ ...draft, url: value })}
+              value={displayUrl}
+              onChange={handleUrlChange}
               placeholder="{{baseUrl}}/users"
               aria-label="Request URL"
               variableLookup={variableLookup}
@@ -3085,7 +3139,7 @@ function RequestEditor({
                     <KeyValueTable
                       rows={draft.queryParams}
                       variableLookup={variableLookup}
-                      onChange={(queryParams) => onChange({ ...draft, queryParams })}
+                      onChange={handleQueryParamsChange}
                       addLabel="Add param"
                     />
                   </EditorSection>
@@ -4670,7 +4724,6 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
 
   return (
     <div className="grid gap-2">
-      <ScriptResultsPanel results={response.scriptResults ?? []} />
       <EditorSection title="Response Body">
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
@@ -4744,7 +4797,7 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
             currentSearchMatch={currentBodySearchMatch}
           />
         ) : (
-          <pre ref={bodyRef} className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
+          <pre ref={bodyRef} className="whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
             {displayedBody}
           </pre>
         )}
@@ -4764,6 +4817,8 @@ function ResponsePanel({
 }) {
   const responseSummary = response && !("error" in response) ? response : null;
   const [showHeadersModal, setShowHeadersModal] = useState(false);
+  const [showScriptResults, setShowScriptResults] = useState(false);
+  const scriptResults = response?.scriptResults ?? [];
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-t border-slate-200 bg-white">
@@ -4776,6 +4831,20 @@ function ResponsePanel({
           <span className="truncate rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700">
             {response.error}
           </span>
+        ) : null}
+        {scriptResults.length > 0 ? (
+          <button
+            type="button"
+            className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold ${
+              scriptResults.every((r) => r.ok)
+                ? "border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100"
+                : "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+            }`}
+            onClick={() => setShowScriptResults(true)}
+            title="View script results"
+          >
+            Scripts {scriptResults.every((r) => r.ok) ? "ok" : "failed"}
+          </button>
         ) : null}
         <div className="ml-auto shrink-0">{busy ? <Loader2 className="animate-spin text-teal-600" size={18} /> : null}</div>
       </div>
@@ -4791,6 +4860,11 @@ function ResponsePanel({
       {responseSummary && showHeadersModal ? (
         <ResponseHeadersModal headers={responseSummary.headers} onClose={() => setShowHeadersModal(false)} />
       ) : null}
+      {showScriptResults && scriptResults.length > 0 ? (
+        <Modal title="Script Results" onClose={() => setShowScriptResults(false)}>
+          <ScriptResultsPanel results={scriptResults} />
+        </Modal>
+      ) : null}
     </aside>
   );
 }
@@ -4802,7 +4876,6 @@ function ErrorResponse({
 }) {
   return (
     <div className="grid gap-2">
-      <ScriptResultsPanel results={response.scriptResults ?? []} />
       <div className="rounded border border-rose-200 bg-rose-50 p-2 text-sm text-rose-700">
         <div className="font-semibold">{response.error}</div>
         {response.durationMs ? <div>{response.durationMs} ms</div> : null}
@@ -5750,7 +5823,7 @@ function PrettyBody({
   const hasSearch = !!searchQuery && !!searchResults && searchResults.length > 0;
 
   return (
-    <pre className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-950 p-2 font-mono text-xs leading-5 text-slate-50">
+    <pre className="whitespace-pre-wrap rounded border border-slate-800 bg-slate-950 p-2 font-mono text-xs leading-5 text-slate-50">
       {hasSearch ? (
         renderPrettyWithSearch(formatted, searchQuery!, searchResults!, currentSearchMatch ?? 0)
       ) : language === "text" ? (

@@ -111,11 +111,14 @@ export function resolveRequestDraft(draft: RequestDraft, buckets: VariableBucket
 }
 
 function resolveRows(rows: KeyValueRow[], resolve: (text: string) => string): KeyValueRow[] {
-  return rows.map((row) => ({
-    ...row,
-    key: resolve(row.key),
-    value: resolve(row.value)
-  }));
+  return rows.map((row) => {
+    if (!row.enabled) return row;
+    return {
+      ...row,
+      key: resolve(row.key),
+      value: resolve(row.value)
+    };
+  });
 }
 
 function resolveAuth(auth: AuthConfig, resolve: (text: string) => string): AuthConfig {

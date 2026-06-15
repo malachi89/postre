@@ -8,3 +8,4 @@ coverage
 postre-local-*.pid
 prisma/dev.db
 prisma/dev.db-journal
+.claude
