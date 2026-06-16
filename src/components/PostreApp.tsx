@@ -3180,26 +3180,18 @@ function RequestEditor({
               </span>
             ) : null}
           </div>
-          {busy ? (
+          <div className="send-button-group relative flex">
             <button
-              className="inline-flex h-9 items-center gap-2 rounded border border-rose-300 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50"
-              onClick={onCancel}
+              className={`inline-flex h-9 items-center gap-2 rounded-l px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 ${busy ? "bg-teal-700" : "bg-teal-600 hover:bg-teal-700"}`}
+              onClick={busy ? onCancel : onSend}
+              disabled={!busy && !draft.url.trim()}
               type="button"
+              title={busy ? "Cancel request" : "Send request"}
             >
-              <X size={17} />
-              Cancel
+              {busy ? <Loader2 size={17} className="animate-spin" /> : <Send size={17} />}
+              {busy ? "Cancel" : "Send"}
             </button>
-          ) : (
-            <div className="send-button-group relative flex">
-              <button
-                className="inline-flex h-9 items-center gap-2 rounded-l bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={onSend}
-                disabled={!draft.url.trim()}
-                type="button"
-              >
-                <Send size={17} />
-                Send
-              </button>
+            {!busy && (
               <button
                 className="flex h-9 w-7 items-center justify-center rounded-r bg-teal-600 text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => setShowSendMenu((current) => !current)}
@@ -3208,30 +3200,30 @@ function RequestEditor({
               >
                 <ChevronDown size={12} />
               </button>
-              {showSendMenu ? (
-                <div
-                  className="absolute right-0 top-full z-30 mt-1 w-52 rounded border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-xl"
-                  onClick={(event) => event.stopPropagation()}
+            )}
+            {showSendMenu && !busy ? (
+              <div
+                className="absolute right-0 top-full z-30 mt-1 w-52 rounded border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  className="flex h-8 w-full items-center px-3 text-left hover:bg-teal-50 hover:text-teal-800"
+                  onClick={() => { setShowSendMenu(false); onSend(); }}
+                  type="button"
                 >
-                  <button
-                    className="flex h-8 w-full items-center px-3 text-left hover:bg-teal-50 hover:text-teal-800"
-                    onClick={() => { setShowSendMenu(false); onSend(); }}
-                    type="button"
-                  >
-                    Send
-                  </button>
-                  <button
-                    className="flex h-8 w-full items-center px-3 text-left hover:bg-teal-50 hover:text-teal-800"
-                    onClick={() => { setShowSendMenu(false); onSendAndDownload?.(); }}
-                    type="button"
-                  >
-                    <Download size={14} className="mr-2" />
-                    Send and Download
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          )}
+                  Send
+                </button>
+                <button
+                  className="flex h-8 w-full items-center px-3 text-left hover:bg-teal-50 hover:text-teal-800"
+                  onClick={() => { setShowSendMenu(false); onSendAndDownload?.(); }}
+                  type="button"
+                >
+                  <Download size={14} className="mr-2" />
+                  Send and Download
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 
