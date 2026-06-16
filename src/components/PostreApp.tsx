@@ -107,7 +107,7 @@ type StoredRequestTabs = {
   tabs: Array<{ tabId: string; requestId: string }>;
   activeTabId: string | null;
 };
-type BodyViewMode = "edit" | "pretty";
+type BodyViewMode = "edit" | "pretty" | "preview";
 type BodyFormat = "json" | "xml" | "text";
 
 const EMPTY_AUTH: AuthConfig = { type: "none" };
@@ -338,6 +338,126 @@ function renderTokenizedHtml(value: string, variableLookup: VariableLookup) {
   return parts.join("");
 }
 
+function renderVariableTokenHtml(text: string, variableLookup: VariableLookup) {
+  const parts: string[] = [];
+  let match: RegExpExecArray | null;
+  let lastIndex = 0;
+  TOKEN_PATTERN.lastIndex = 0;
+
+  while ((match = TOKEN_PATTERN.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(escapeHtml(text.slice(lastIndex, match.index)));
+    }
+
+    const tokenText = match[0];
+    const variableName = match[1];
+    const resolvedVariable = variableLookup[variableName];
+    const hasValue = resolvedVariable !== undefined;
+    const colorClass = hasValue
+      ? "border-teal-200 bg-teal-50 text-teal-800"
+      : "border-amber-200 bg-amber-50 text-amber-800";
+
+    parts.push(
+      `<span class="mx-px inline-flex rounded-full border px-2 py-0.5 align-baseline text-[0.95em] leading-5 ${colorClass}" title="${escapeHtml(hasValue ? resolvedVariable.value : `Variable not found: ${variableName}`)}">${escapeHtml(tokenText)}</span>`
+    );
+    lastIndex = match.index + tokenText.length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(escapeHtml(text.slice(lastIndex)));
+  }
+
+  return parts.join("");
+}
+
+function renderSyntaxHighlightedHtml(value: string, variableLookup: VariableLookup, format: "json" | "xml") {
+  if (format === "json") {
+    return renderJsonHighlightHtml(value, variableLookup);
+  }
+  return renderXmlHighlightHtml(value, variableLookup);
+}
+
+function renderJsonHighlightHtml(value: string, variableLookup: VariableLookup) {
+  const parts: string[] = [];
+  const regex = /("(?:\\.|[^"\\])*")|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|(true|false|null)|([{}[\],:])/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(value))) {
+    if (match.index > lastIndex) {
+      parts.push(escapeHtml(value.slice(lastIndex, match.index)));
+    }
+
+    const [token, stringToken, numberToken, literalToken] = match;
+    const nextNonSpace = value.slice(match.index + token.length).match(/\S/)?.[0] ?? "";
+    const color = stringToken
+      ? nextNonSpace === ":" ? "#7dd3fc" : "#86efac"
+      : numberToken
+        ? "#fbbf24"
+        : literalToken === "null"
+          ? "#fda4af"
+          : literalToken
+            ? "#c4b5fd"
+            : "#94a3b8";
+
+    const content = stringToken ? renderVariableTokenHtml(token, variableLookup) : escapeHtml(token);
+    parts.push(`<span style="color:${color}">${content}</span>`);
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < value.length) {
+    parts.push(escapeHtml(value.slice(lastIndex)));
+  }
+
+  return parts.join("");
+}
+
+function renderXmlHighlightHtml(value: string, variableLookup: VariableLookup) {
+  const parts: string[] = [];
+  const regex = /(<\/?[^>]+>)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(value))) {
+    if (match.index > lastIndex) {
+      parts.push(renderVariableTokenHtml(value.slice(lastIndex, match.index), variableLookup));
+    }
+
+    parts.push(`<span style="color:#7dd3fc">${highlightXmlTagHtml(match[0], variableLookup)}</span>`);
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < value.length) {
+    parts.push(renderVariableTokenHtml(value.slice(lastIndex), variableLookup));
+  }
+
+  return parts.join("");
+}
+
+function highlightXmlTagHtml(tag: string, variableLookup: VariableLookup) {
+  const pieces: string[] = [];
+  const attrRegex = /(\s+[A-Za-z_:][-A-Za-z0-9_:.]*)(=)("[^"]*"|'[^']*')/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = attrRegex.exec(tag))) {
+    if (match.index > lastIndex) {
+      pieces.push(escapeHtml(tag.slice(lastIndex, match.index)));
+    }
+
+    pieces.push(`<span style="color:#fbbf24">${escapeHtml(match[1])}</span>`);
+    pieces.push(`<span style="color:#94a3b8">${escapeHtml(match[2])}</span>`);
+    pieces.push(`<span style="color:#86efac">${renderVariableTokenHtml(match[3], variableLookup)}</span>`);
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < tag.length) {
+    pieces.push(escapeHtml(tag.slice(lastIndex)));
+  }
+
+  return pieces.join("");
+}
+
 function CakeIcon({
   size,
   className = ""
@@ -364,7 +484,8 @@ function TokenizedField({
   variableLookup,
   disabled = false,
   multiline = false,
-  className = ""
+  className = "",
+  syntaxHighlight
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -374,6 +495,7 @@ function TokenizedField({
   disabled?: boolean;
   multiline?: boolean;
   className?: string;
+  syntaxHighlight?: "json" | "xml";
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const selectionRef = useRef<SelectionOffsets | null>(null);
@@ -384,7 +506,10 @@ function TokenizedField({
     activeIndex: number;
   } | null>(null);
   const plainHtml = useMemo(() => escapeHtml(value), [value]);
-  const tokenizedHtml = useMemo(() => renderTokenizedHtml(value, variableLookup), [value, variableLookup]);
+  const tokenizedHtml = useMemo(
+    () => syntaxHighlight ? renderSyntaxHighlightedHtml(value, variableLookup, syntaxHighlight) : renderTokenizedHtml(value, variableLookup),
+    [value, variableLookup, syntaxHighlight]
+  );
   const suggestions = useMemo(
     () => (autocomplete ? getVariableSuggestions(variableLookup, autocomplete.match.query) : []),
     [autocomplete, variableLookup]
@@ -497,9 +622,12 @@ function TokenizedField({
       <div
         ref={ref}
         className={[
-          "w-full rounded border border-slate-300 bg-white font-mono text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100",
+          "w-full rounded border font-mono text-xs outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100",
+          syntaxHighlight && !isFocused && value
+            ? "border-slate-700 bg-slate-950 text-slate-50"
+            : "border-slate-300 bg-white text-slate-900",
           multiline
-            ? "min-h-64 max-h-[32rem] overflow-y-auto whitespace-pre-wrap break-words p-2 leading-6"
+            ? "min-h-64 max-h-[32rem] overflow-y-auto whitespace-pre-wrap break-words p-2 leading-5"
             : "min-h-[2.25rem] overflow-x-auto overflow-y-hidden whitespace-pre px-3 py-1.5 leading-5",
           disabled ? "cursor-not-allowed bg-slate-50 text-slate-400" : "",
           className
@@ -3189,6 +3317,11 @@ function RequestEditor({
                         aria-label="Request body"
                         variableLookup={variableLookup}
                         multiline
+                        syntaxHighlight={
+                          draft.bodyMode === "raw_json" ? "json"
+                          : draft.bodyMode === "raw_text" && draft.bodyRaw.trimStart().startsWith("<") ? "xml"
+                          : undefined
+                        }
                       />
                     </div>
                   </section>
@@ -3569,9 +3702,9 @@ function CollectionTree({
   const dropActive = draggedRequestId !== null && dropTargetCollectionId === collection.id;
 
   return (
-    <div className="mb-2">
+    <div>
       <div
-        className={`group flex items-center gap-1 rounded px-2 py-1.5 hover:bg-slate-50 ${
+        className={`group flex items-center gap-1 rounded px-2 py-0.5 hover:bg-slate-50 ${
           dropActive ? "bg-amber-50 ring-1 ring-amber-300" : ""
         }`}
         onDragOver={(event) => {
@@ -3600,16 +3733,16 @@ function CollectionTree({
       >
         <button
           type="button"
-          className="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+          className="flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600"
           onClick={() => onToggleCollection(collection)}
           aria-label={expanded ? `Collapse collection ${collection.name}` : `Expand collection ${collection.name}`}
           title={expanded ? `Collapse collection ${collection.name}` : `Expand collection ${collection.name}`}
         >
-          <ChevronRight size={14} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <ChevronRight size={12} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
         </button>
-        <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onSelectCollection}>
-          <Folder size={15} className="text-amber-600" />
-          <span className="truncate text-sm font-semibold">{collection.name}</span>
+        <button className="flex min-w-0 flex-1 items-center gap-1.5 text-left" onClick={onSelectCollection}>
+          <Folder size={13} className="text-amber-600" />
+          <span className="truncate text-xs font-semibold">{collection.name}</span>
         </button>
         <TreeAction label="Rename collection" onClick={() => onRenameCollection(collection)}>
           <Pencil size={13} />
@@ -3622,7 +3755,7 @@ function CollectionTree({
         </TreeAction>
       </div>
       {expanded ? (
-        <div className="ml-5 border-l border-slate-200 pl-2">
+        <div className="ml-4 border-l border-slate-200 pl-1.5">
           {collection.folders.map((folder) => (
             <FolderTree
               key={folder.id}
@@ -3723,7 +3856,7 @@ function FolderTree({
   return (
     <div>
       <div
-        className={`group flex items-center gap-1 rounded px-2 py-1.5 ${
+        className={`group flex items-center gap-1 rounded px-2 py-0.5 ${
           selected ? "bg-teal-50 text-teal-800" : "hover:bg-slate-50"
         } ${dropActive ? "bg-amber-50 ring-1 ring-amber-300" : ""}`}
         onDragOver={(event) => {
@@ -3752,19 +3885,19 @@ function FolderTree({
       >
         <button
           type="button"
-          className="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+          className="flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600"
           onClick={() => onToggleFolder(folder)}
           aria-label={expanded ? `Collapse folder ${folder.name}` : `Expand folder ${folder.name}`}
           title={expanded ? `Collapse folder ${folder.name}` : `Expand folder ${folder.name}`}
         >
-          <ChevronRight size={13} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <ChevronRight size={11} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
         </button>
         <button
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           onClick={() => onSelectFolder(folder)}
         >
-          <Folder size={14} className={selected ? "text-teal-700" : "text-amber-600"} />
-          <span className="truncate text-sm">{folder.name}</span>
+          <Folder size={12} className={selected ? "text-teal-700" : "text-amber-600"} />
+          <span className="truncate text-xs">{folder.name}</span>
         </button>
         <TreeAction label="Rename folder" onClick={() => onRenameFolder(folder)}>
           <Pencil size={13} />
@@ -3777,7 +3910,7 @@ function FolderTree({
         </TreeAction>
       </div>
       {expanded ? (
-        <div className="ml-4 border-l border-slate-200 pl-2">
+        <div className="ml-3 border-l border-slate-200 pl-1.5">
           {folder.children.map((child) => (
             <FolderTree
               key={child.id}
@@ -3861,7 +3994,7 @@ function RequestTreeItem({
 
   return (
     <div
-      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm ${
+      className={`flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-xs ${
         selected ? "bg-teal-600 text-white" : "hover:bg-slate-50"
       }`}
     >
@@ -3880,14 +4013,14 @@ function RequestTreeItem({
             }
           }}
           onBlur={() => onRenameSubmit(request.id, editValue)}
-          className="min-w-0 flex-1 rounded border border-teal-500 px-1 py-0.5 text-sm outline-none"
+          className="min-w-0 flex-1 rounded border border-teal-500 px-1 py-0.5 text-xs outline-none"
           autoFocus
         />
       ) : (
         <button
           type="button"
           draggable
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           onClick={() => onSelect(request)}
           onContextMenu={(event) => onContextMenu(event, request)}
           onDragStart={(event) => {
@@ -3898,7 +4031,7 @@ function RequestTreeItem({
           }}
           onDragEnd={onDragEnd}
         >
-          <FileText size={14} className={selected ? "text-white" : "text-slate-500"} />
+          <FileText size={12} className={selected ? "text-white" : "text-slate-500"} />
           <span className={`font-semibold ${selected ? "text-white" : methodColor(request.method)}`}>{request.method}</span>
           <span className="truncate">{request.name}</span>
         </button>
@@ -3958,7 +4091,7 @@ function EnvironmentTreeItem({
             }
           }}
           onBlur={() => onRenameSubmit(environment.id, editValue)}
-          className="min-w-0 flex-1 rounded border border-teal-500 px-1 py-0.5 text-sm outline-none"
+          className="min-w-0 flex-1 rounded border border-teal-500 px-1 py-0.5 text-xs outline-none"
           autoFocus
         />
       ) : (
@@ -4266,10 +4399,59 @@ function EnvironmentWorkspace({
   const selectedEnv = data.environments.find((environment) => environment.id === selectedEnvironmentId) ?? null;
   const [globalRows, setGlobalRows] = useState<VariableValue[]>(data.globalVariables);
   const [envRows, setEnvRows] = useState<VariableValue[]>(selectedEnv?.variables ?? []);
+  const globalSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const envSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isInitialGlobals = useRef(true);
+  const isInitialEnv = useRef(true);
+
   useEffect(() => {
     const nextEnv = data.environments.find((environment) => environment.id === selectedEnvironmentId) ?? null;
     setEnvRows(nextEnv?.variables ?? []);
+    isInitialEnv.current = true;
   }, [data.environments, selectedEnvironmentId]);
+
+  useEffect(() => {
+    if (isInitialGlobals.current) {
+      isInitialGlobals.current = false;
+      return;
+    }
+    if (globalSaveTimer.current) clearTimeout(globalSaveTimer.current);
+    globalSaveTimer.current = setTimeout(() => {
+      void api("/api/variables/bulk", {
+        method: "PUT",
+        body: JSON.stringify({
+          scope: "GLOBAL",
+          variables: globalRows.map(stripVariableId)
+        })
+      }).then(() => onRefresh());
+    }, 600);
+    return () => {
+      if (globalSaveTimer.current) clearTimeout(globalSaveTimer.current);
+    };
+  }, [globalRows]);
+
+  useEffect(() => {
+    if (isInitialEnv.current) {
+      isInitialEnv.current = false;
+      return;
+    }
+    if (!selectedEnv) return;
+    if (envSaveTimer.current) clearTimeout(envSaveTimer.current);
+    const envId = selectedEnv.id;
+    envSaveTimer.current = setTimeout(() => {
+      void api("/api/variables/bulk", {
+        method: "PUT",
+        body: JSON.stringify({
+          scope: "ENVIRONMENT",
+          environmentId: envId,
+          variables: envRows.map(stripVariableId)
+        })
+      }).then(() => onRefresh());
+    }, 600);
+    return () => {
+      if (envSaveTimer.current) clearTimeout(envSaveTimer.current);
+    };
+  }, [envRows]);
 
   async function deleteEnvironment() {
     if (!selectedEnv) {
@@ -4277,33 +4459,6 @@ function EnvironmentWorkspace({
     }
 
     onDeleteEnvironment(selectedEnv.id);
-  }
-
-  async function saveGlobals() {
-    await api("/api/variables/bulk", {
-      method: "PUT",
-      body: JSON.stringify({
-        scope: "GLOBAL",
-        variables: globalRows.map(stripVariableId)
-      })
-    });
-    await onRefresh();
-  }
-
-  async function saveEnvironment() {
-    if (!selectedEnv) {
-      return;
-    }
-
-    await api("/api/variables/bulk", {
-      method: "PUT",
-      body: JSON.stringify({
-        scope: "ENVIRONMENT",
-        environmentId: selectedEnv.id,
-        variables: envRows.map(stripVariableId)
-      })
-    });
-    await onRefresh();
   }
 
   return (
@@ -4363,28 +4518,12 @@ function EnvironmentWorkspace({
         <div className="grid gap-2">
           <EditorSection title="Global Variables">
             <VariableTable rows={globalRows} onChange={setGlobalRows} />
-            <button
-              className="mt-2 inline-flex h-8 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-semibold hover:bg-slate-50"
-              onClick={saveGlobals}
-              type="button"
-            >
-              <Save size={15} />
-              Save globals
-            </button>
           </EditorSection>
 
           <EditorSection title="Environment Variables">
             {selectedEnv ? (
               <>
                 <VariableTable rows={envRows} onChange={setEnvRows} />
-                <button
-                  className="mt-2 inline-flex h-8 items-center gap-2 rounded bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
-                  onClick={saveEnvironment}
-                  type="button"
-                >
-                  <Save size={15} />
-                  Save environment
-                </button>
               </>
             ) : (
               <div className="grid gap-2">
@@ -4423,7 +4562,11 @@ function VariableTable({
               ...row,
               ...patch,
               isSecret:
-                patch.key !== undefined ? row.isSecret || inferIsSecret(patch.key) : row.isSecret
+                patch.isSecret !== undefined
+                  ? patch.isSecret
+                  : patch.key !== undefined
+                    ? row.isSecret || inferIsSecret(patch.key)
+                    : row.isSecret
             }
           : row
       )
@@ -4639,39 +4782,13 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
   const [bodySearch, setBodySearch] = useState("");
   const [bodySearchMatch, setBodySearchMatch] = useState(0);
   const bodyRef = useRef<HTMLPreElement | null>(null);
+  const isHtmlResponse = response.contentType.toLowerCase().includes("html");
 
   async function copyBody() {
     try {
       await navigator.clipboard.writeText(body);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // ignore
-    }
-  }
-
-  async function downloadBody() {
-    try {
-      let blob: Blob;
-      if (response.bodyBase64) {
-        const binary = atob(response.bodyBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        blob = new Blob([bytes], { type: response.contentType || "application/octet-stream" });
-      } else {
-        blob = new Blob([body], { type: response.contentType || "text/plain" });
-      }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      const ext = response.contentType.includes("pdf") ? "pdf" : response.contentType.includes("json") ? "json" : response.contentType.includes("xml") ? "xml" : response.contentType.includes("html") ? "html" : "bin";
-      a.download = `response.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
     } catch {
       // ignore
     }
@@ -4724,16 +4841,16 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
 
   return (
     <div className="grid gap-2">
-      <EditorSection title="Response Body">
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-1">
-            {(["pretty", "edit"] as const).map((mode) => {
+      <section className="rounded border border-slate-200 bg-white p-1.5 shadow-panel">
+        <div className="mb-1 flex items-center gap-2">
+          <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-0.5">
+            {(["pretty", "edit", ...(isHtmlResponse ? ["preview" as const] : [])] as const).map((mode) => {
               const active = bodyViewMode === mode;
 
               return (
                 <button
                   key={mode}
-                  className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
+                  className={`rounded px-2.5 py-1 text-xs font-semibold transition ${
                     active
                       ? "bg-white text-teal-700 shadow-sm"
                       : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
@@ -4741,14 +4858,14 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
                   onClick={() => setBodyViewMode(mode)}
                   type="button"
                 >
-                  {mode === "pretty" ? "Pretty" : "Raw"}
+                  {mode === "pretty" ? "Pretty" : mode === "edit" ? "Raw" : "Preview"}
                 </button>
               );
             })}
           </div>
           <input
             type="text"
-            className="h-7 w-40 rounded border border-slate-300 px-2 text-xs font-mono outline-none focus:border-teal-500"
+            className="h-6 w-36 rounded border border-slate-300 px-2 text-xs font-mono outline-none focus:border-teal-500"
             placeholder="Search in body..."
             value={bodySearch}
             onChange={(event) => { setBodySearch(event.target.value); setBodySearchMatch(0); }}
@@ -4772,16 +4889,7 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
             </span>
           ) : null}
           <button
-            className="inline-flex items-center gap-1 rounded px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
-            onClick={downloadBody}
-            type="button"
-            title="Download response body"
-          >
-            <Download size={14} />
-            Download
-          </button>
-          <button
-            className="ml-auto inline-flex items-center gap-1 rounded px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+            className="ml-auto inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100"
             onClick={copyBody}
             type="button"
           >
@@ -4796,12 +4904,20 @@ function SuccessResponse({ response, body }: { response: SendSuccessResponseStat
             searchResults={bodySearchResults.length > 0 ? bodySearchResults : undefined}
             currentSearchMatch={currentBodySearchMatch}
           />
+        ) : bodyViewMode === "preview" ? (
+          <iframe
+            srcDoc={body}
+            sandbox="allow-same-origin"
+            className="w-full rounded border border-slate-200 bg-white"
+            style={{ minHeight: 300 }}
+            title="HTML Preview"
+          />
         ) : (
           <pre ref={bodyRef} className="whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
             {displayedBody}
           </pre>
         )}
-      </EditorSection>
+      </section>
     </div>
   );
 }
@@ -5336,7 +5452,7 @@ function TreeAction({
 }) {
   return (
     <button
-      className="hidden h-6 w-6 items-center justify-center rounded text-slate-500 hover:bg-white group-hover:flex"
+      className="hidden h-5 w-5 items-center justify-center rounded text-slate-500 hover:bg-white group-hover:flex"
       title={label}
       aria-label={label}
       onClick={onClick}
