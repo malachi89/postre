@@ -126,6 +126,7 @@ const SIDEBAR_HANDLE_HEIGHT = 10;
 const THEME_STORAGE_KEY = "postre-theme";
 const REQUEST_TABS_STORAGE_KEY = "postre-request-tabs";
 const EXPANDED_FOLDERS_STORAGE_KEY = "postre-expanded-folders";
+const EXPANDED_COLLECTIONS_STORAGE_KEY = "postre-expanded-collections";
 const REQUEST_DRAG_DATA_TYPE = "application/x-postre-request-id";
 const TOKEN_PATTERN = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
 type Theme = "light" | "dark";
@@ -145,13 +146,13 @@ function hasDraggedRequestType(event: Pick<React.DragEvent, "dataTransfer">) {
   return Array.from(event.dataTransfer.types).includes(REQUEST_DRAG_DATA_TYPE);
 }
 
-function readExpandedFolders(): Record<string, boolean> {
+function readStoredRecord(key: string): Record<string, boolean> {
   if (typeof window === "undefined") {
     return {};
   }
 
   try {
-    const stored = window.localStorage.getItem(EXPANDED_FOLDERS_STORAGE_KEY);
+    const stored = window.localStorage.getItem(key);
     if (stored) {
       return JSON.parse(stored);
     }
@@ -838,8 +839,8 @@ export function PostreApp() {
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | null>(null);
-  const [expandedCollections, setExpandedCollections] = useState<Record<string, boolean>>({});
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>(readExpandedFolders);
+  const [expandedCollections, setExpandedCollections] = useState<Record<string, boolean>>(() => readStoredRecord(EXPANDED_COLLECTIONS_STORAGE_KEY));
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>(() => readStoredRecord(EXPANDED_FOLDERS_STORAGE_KEY));
   const [collectionsPanelWidth, setCollectionsPanelWidth] = useState<number | null>(300);
   const [collectionsPanelHeight, setCollectionsPanelHeight] = useState<number | null>(360);
   const [theme, setTheme] = useState<Theme>("light");
@@ -992,6 +993,14 @@ export function PostreApp() {
       // Ignore storage failures.
     }
   }, [expandedFolders]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(EXPANDED_COLLECTIONS_STORAGE_KEY, JSON.stringify(expandedCollections));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [expandedCollections]);
 
   const activeRequestTab = useMemo(
     () => requestTabs.find((tab) => tab.tabId === activeRequestTabId) ?? null,
@@ -2419,7 +2428,7 @@ className="inline-flex h-8 w-8 items-center justify-center rounded border border
             ) : null}
             {draft ? (
               <div ref={responseSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="flex-1 overflow-auto" style={{ minHeight: REQUEST_EDITOR_MIN_HEIGHT }}>
+                <div className="min-h-0 flex-1 overflow-hidden">
                   <RequestEditor
                     draft={draft}
                     busy={busy}
