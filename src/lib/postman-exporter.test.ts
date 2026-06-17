@@ -31,6 +31,7 @@ const collection: ApiCollection = {
           headers: [],
           queryParams: [],
           bodyMode: "none",
+          bodyRawFormat: "json",
           bodyRaw: "",
           preRequestScript: "requestPre();",
           postRequestScript: "requestPost();",

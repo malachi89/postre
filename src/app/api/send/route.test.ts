@@ -19,6 +19,7 @@ function draft(patch: Partial<RequestDraft> = {}): RequestDraft {
     headers: [],
     queryParams: [],
     bodyMode: "none",
+    bodyRawFormat: "json",
     bodyRaw: "",
     preRequestScript: "",
     postRequestScript: "",

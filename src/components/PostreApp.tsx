@@ -44,6 +44,7 @@ import type {
   AppData,
   AuthConfig,
   BodyMode,
+  RawFormat,
   HttpMethod,
   ImportPreview,
   KeyValueRow,
@@ -216,6 +217,33 @@ function buildVariableLookup({
   }
 
   return lookup;
+}
+
+function resolveDraftVariables(draft: RequestDraft, lookup: VariableLookup): RequestDraft {
+  const resolve = (text: string) =>
+    text.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (_m, key: string) => {
+      const entry = lookup[key];
+      return entry ? entry.value : `{{${key}}}`;
+    });
+  const resolveRows = (rows: KeyValueRow[]) =>
+    rows.map((r) => (r.enabled ? { ...r, key: resolve(r.key), value: resolve(r.value) } : r));
+  return {
+    ...draft,
+    url: resolve(draft.url),
+    headers: resolveRows(draft.headers),
+    queryParams: resolveRows(draft.queryParams),
+    bodyRaw: draft.bodyRaw ? resolve(draft.bodyRaw) : "",
+    auth: {
+      ...draft.auth,
+      ...(draft.auth.type === "bearer" ? { token: resolve(draft.auth.token ?? "") } : {}),
+      ...(draft.auth.type === "basic"
+        ? { username: resolve(draft.auth.username ?? ""), password: resolve(draft.auth.password ?? "") }
+        : {}),
+      ...(draft.auth.type === "apiKey"
+        ? { key: resolve(draft.auth.key ?? ""), value: resolve(draft.auth.value ?? "") }
+        : {})
+    }
+  };
 }
 
 function readEditableText(element: HTMLDivElement, multiline: boolean) {
@@ -1676,6 +1704,7 @@ export function PostreApp() {
         headers: request.headers,
         queryParams: request.queryParams,
         bodyMode: request.bodyMode,
+        bodyRawFormat: request.bodyRawFormat,
         bodyRaw: request.bodyRaw,
         preRequestScript: request.preRequestScript,
         postRequestScript: request.postRequestScript,
@@ -1696,7 +1725,7 @@ export function PostreApp() {
   }
 
   function copyRequestAsCurl(request: ApiRequest) {
-    const curl = requestDraftToCurl(request);
+    const curl = requestDraftToCurl(resolveDraftVariables(request, variableLookup));
     navigator.clipboard.writeText(curl).catch(() => {});
     setRequestTreeMenu(null);
     setNotice("Request copied as cURL.");
@@ -1734,6 +1763,7 @@ export function PostreApp() {
         headers: [],
         queryParams: [],
         bodyMode: "none",
+        bodyRawFormat: "json",
         bodyRaw: "",
         preRequestScript: "",
         postRequestScript: "",
@@ -3067,7 +3097,10 @@ function RequestEditor({
   const [showSendMenu, setShowSendMenu] = useState(false);
   const [curlError, setCurlError] = useState<string | null>(null);
   const [curlNotice, setCurlNotice] = useState<string | null>(null);
-  const generatedCurl = useMemo(() => requestDraftToCurl(draft), [draft]);
+  const generatedCurl = useMemo(
+    () => requestDraftToCurl(resolveDraftVariables(draft, variableLookup)),
+    [draft, variableLookup]
+  );
 
   // Build the display URL from base URL + enabled query params
   const displayUrl = useMemo(() => {
@@ -3351,7 +3384,7 @@ function RequestEditor({
                   <section className="rounded border border-slate-200 bg-white p-2 shadow-panel">
                     <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                       <h2 className="text-sm font-semibold text-slate-700">Body</h2>
-                      {(["none", "raw_json", "raw_text", "form_urlencoded", "multipart"] as const).map((mode) => (
+                      {(["none", "formdata", "form_urlencoded", "raw", "binary"] as const).map((mode) => (
                         <label key={mode} className="flex cursor-pointer items-center gap-1 text-xs">
                           <input
                             type="radio"
@@ -3360,10 +3393,23 @@ function RequestEditor({
                             checked={draft.bodyMode === mode}
                             onChange={() => onChange({ ...draft, bodyMode: mode })}
                           />
-                          {mode === "none" ? "none" : mode === "raw_json" ? "raw JSON" : mode === "raw_text" ? "raw text" : mode === "form_urlencoded" ? "URL-encoded" : "multipart"}
+                          {mode === "none" ? "none" : mode === "formdata" ? "form-data" : mode === "form_urlencoded" ? "x-www-form-urlencoded" : mode === "raw" ? "raw" : "binary"}
                         </label>
                       ))}
-                      {draft.bodyMode === "raw_json" && draft.bodyRaw.trim() ? (
+                      {draft.bodyMode === "raw" ? (
+                        <select
+                          className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-slate-700"
+                          value={draft.bodyRawFormat}
+                          onChange={(e) => onChange({ ...draft, bodyRawFormat: e.target.value as RawFormat })}
+                        >
+                          <option value="text">Text</option>
+                          <option value="javascript">JavaScript</option>
+                          <option value="json">JSON</option>
+                          <option value="html">HTML</option>
+                          <option value="xml">XML</option>
+                        </select>
+                      ) : null}
+                      {draft.bodyMode === "raw" && draft.bodyRawFormat === "json" && draft.bodyRaw.trim() ? (
                         <button
                           className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold text-slate-500 hover:bg-slate-100"
                           onClick={() => {
@@ -3387,13 +3433,13 @@ function RequestEditor({
                         value={draft.bodyRaw}
                         disabled={draft.bodyMode === "none"}
                         onChange={(value) => onChange({ ...draft, bodyRaw: value })}
-                        placeholder={draft.bodyMode === "raw_json" ? '{\n  "name": "PostRE"\n}' : ""}
+                        placeholder={draft.bodyMode === "raw" && draft.bodyRawFormat === "json" ? '{\n  "name": "PostRE"\n}' : ""}
                         aria-label="Request body"
                         variableLookup={variableLookup}
                         multiline
                         syntaxHighlight={
-                          draft.bodyMode === "raw_json" ? "json"
-                          : draft.bodyMode === "raw_text" && draft.bodyRaw.trimStart().startsWith("<") ? "xml"
+                          draft.bodyMode === "raw" && draft.bodyRawFormat === "json" ? "json"
+                          : draft.bodyMode === "raw" && (draft.bodyRawFormat === "xml" || draft.bodyRawFormat === "html") ? "xml"
                           : undefined
                         }
                       />
@@ -5831,6 +5877,7 @@ function cloneDraft(request: ApiRequest): RequestDraft {
     headers: request.headers.map((row) => ({ ...row })),
     queryParams: request.queryParams.map((row) => ({ ...row })),
     bodyMode: request.bodyMode,
+    bodyRawFormat: request.bodyRawFormat,
     bodyRaw: request.bodyRaw,
     preRequestScript: request.preRequestScript,
     postRequestScript: request.postRequestScript,
@@ -5849,6 +5896,7 @@ function cloneDraftDraft(draft: RequestDraft): RequestDraft {
     headers: draft.headers.map((row) => ({ ...row })),
     queryParams: draft.queryParams.map((row) => ({ ...row })),
     bodyMode: draft.bodyMode,
+    bodyRawFormat: draft.bodyRawFormat,
     bodyRaw: draft.bodyRaw,
     preRequestScript: draft.preRequestScript,
     postRequestScript: draft.postRequestScript,

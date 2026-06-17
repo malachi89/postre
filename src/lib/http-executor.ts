@@ -203,12 +203,16 @@ function buildBody(draft: RequestDraft, _headers: Headers): BodyInit | undefined
     return undefined;
   }
 
-  if (draft.bodyMode === "raw_json" || draft.bodyMode === "raw_text") {
+  if (draft.bodyMode === "raw") {
     return draft.bodyRaw;
   }
 
   if (draft.bodyMode === "form_urlencoded") {
     return new URLSearchParams(draft.bodyRaw);
+  }
+
+  if (draft.bodyMode === "binary") {
+    return draft.bodyRaw;
   }
 
   return undefined;

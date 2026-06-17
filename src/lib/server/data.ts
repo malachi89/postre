@@ -13,6 +13,7 @@ import type {
   AppData,
   AuthConfig,
   BodyMode,
+  RawFormat,
   HttpMethod,
   KeyValueRow,
   RequestDraft,
@@ -92,6 +93,7 @@ export function serializeRequest(request: {
   headersJson: string;
   queryParamsJson: string;
   bodyMode: string;
+  bodyRawFormat?: string | null;
   bodyRaw: string | null;
   preRequestScript?: string | null;
   postRequestScript?: string | null;
@@ -112,6 +114,7 @@ export function serializeRequest(request: {
     headers: parseJsonField<KeyValueRow[]>(request.headersJson, []),
     queryParams: parseJsonField<KeyValueRow[]>(request.queryParamsJson, []),
     bodyMode: normalizeBodyMode(request.bodyMode),
+    bodyRawFormat: normalizeRawFormat(request.bodyRawFormat),
     bodyRaw: request.bodyRaw ?? "",
     preRequestScript: request.preRequestScript ?? "",
     postRequestScript: request.postRequestScript ?? "",
@@ -206,6 +209,7 @@ export function requestToPrismaInput(draft: RequestDraft) {
     headersJson: stringifyJson(markSecretRows(draft.headers)),
     queryParamsJson: stringifyJson(markSecretRows(draft.queryParams)),
     bodyMode: draft.bodyMode,
+    bodyRawFormat: draft.bodyRawFormat,
     bodyRaw: draft.bodyRaw,
     preRequestScript: draft.preRequestScript ?? "",
     postRequestScript: draft.postRequestScript ?? "",
@@ -444,15 +448,32 @@ function normalizeMethod(method: string): HttpMethod {
 
 function normalizeBodyMode(mode: string): BodyMode {
   if (
-    mode === "raw_json" ||
-    mode === "raw_text" ||
+    mode === "raw" ||
+    mode === "formdata" ||
     mode === "form_urlencoded" ||
-    mode === "multipart"
+    mode === "binary"
   ) {
     return mode;
   }
 
+  // Migrate legacy modes
+  if (mode === "raw_json" || mode === "raw_text") return "raw";
+  if (mode === "multipart") return "formdata";
+
   return "none";
+}
+
+function normalizeRawFormat(format: string | null | undefined): RawFormat {
+  if (
+    format === "json" ||
+    format === "text" ||
+    format === "xml" ||
+    format === "javascript" ||
+    format === "html"
+  ) {
+    return format;
+  }
+  return "json";
 }
 
 function markSecretRows(rows: KeyValueRow[]): KeyValueRow[] {

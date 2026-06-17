@@ -50,7 +50,7 @@ function requestToPostmanItem(request: ApiRequest): unknown {
       method: request.method,
       header: request.headers.filter((h) => h.enabled).map(headerToPostman),
       url: urlToPostman(request.url, request.queryParams),
-      body: bodyToPostman(request.bodyMode, request.bodyRaw),
+      body: bodyToPostman(request.bodyMode, request.bodyRaw, request.bodyRawFormat),
       auth: authToPostman(request.auth),
       description: ""
     },
@@ -110,25 +110,18 @@ function urlToPostman(url: string, queryParams: { key: string; value: string; en
   }
 }
 
-function bodyToPostman(bodyMode: string, bodyRaw: string): unknown {
+function bodyToPostman(bodyMode: string, bodyRaw: string, bodyRawFormat?: string): unknown {
   if (bodyMode === "none" || !bodyRaw) {
     return undefined;
   }
 
-  if (bodyMode === "raw_json") {
+  if (bodyMode === "raw") {
     return {
       mode: "raw",
       raw: bodyRaw,
       options: {
-        raw: { language: "json" }
+        raw: { language: bodyRawFormat ?? "text" }
       }
-    };
-  }
-
-  if (bodyMode === "raw_text") {
-    return {
-      mode: "raw",
-      raw: bodyRaw
     };
   }
 
@@ -139,10 +132,17 @@ function bodyToPostman(bodyMode: string, bodyRaw: string): unknown {
     };
   }
 
-  if (bodyMode === "multipart") {
+  if (bodyMode === "formdata") {
     return {
       mode: "formdata",
       formdata: parseBodyEntries(bodyRaw)
+    };
+  }
+
+  if (bodyMode === "binary") {
+    return {
+      mode: "raw",
+      raw: bodyRaw
     };
   }
 

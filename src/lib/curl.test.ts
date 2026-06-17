@@ -13,6 +13,7 @@ function draft(patch: Partial<RequestDraft> = {}): RequestDraft {
     headers: [],
     queryParams: [],
     bodyMode: "none",
+    bodyRawFormat: "json",
     bodyRaw: "",
     preRequestScript: "",
     postRequestScript: "",
@@ -43,7 +44,8 @@ describe("curl utilities", () => {
         method: "POST",
         url: "https://api.example/users",
         headers: [{ key: "Content-Type", value: "application/json", enabled: true }],
-        bodyMode: "raw_json",
+        bodyMode: "raw",
+        bodyRawFormat: "json",
         bodyRaw: "{\n  \"name\": \"Ada's laptop\"\n}"
       })
     );
@@ -101,7 +103,7 @@ describe("curl utilities", () => {
       folderId: "folder-1",
       method: "POST",
       url: "https://api.example/users",
-      bodyMode: "raw_json",
+      bodyMode: "raw",
       bodyRaw: '{"name":"Ada"}',
       auth: { type: "none" }
     });
@@ -138,7 +140,7 @@ describe("curl utilities", () => {
     );
 
     expect(result.method).toBe("POST");
-    expect(result.bodyMode).toBe("raw_text");
+    expect(result.bodyMode).toBe("raw");
     expect(result.bodyRaw).toBe("hello world");
   });
 

@@ -10,6 +10,7 @@ import { resolveEffectiveScriptSources } from "@/lib/server/script-inheritance";
 import type {
   ApiCollectionRunReport,
   CollectionRunTargetType,
+  RawFormat,
   RequestDraft,
   ScriptExecutionResult
 } from "@/lib/types";
@@ -36,6 +37,7 @@ interface RequestRecord {
   headersJson: string;
   queryParamsJson: string;
   bodyMode: string;
+  bodyRawFormat: string | null;
   bodyRaw: string | null;
   preRequestScript: string | null;
   postRequestScript: string | null;
@@ -387,6 +389,7 @@ function toRequestDraft(request: RequestRecord): RequestDraft {
     headers: parseJsonField(request.headersJson, []),
     queryParams: parseJsonField(request.queryParamsJson, []),
     bodyMode: normalizeBodyMode(request.bodyMode),
+    bodyRawFormat: normalizeRawFormat(request.bodyRawFormat),
     bodyRaw: request.bodyRaw ?? "",
     preRequestScript: request.preRequestScript ?? "",
     postRequestScript: request.postRequestScript ?? "",
@@ -438,12 +441,20 @@ function normalizeMethod(method: string): RequestDraft["method"] {
 }
 
 function normalizeBodyMode(mode: string): RequestDraft["bodyMode"] {
-  return mode === "raw_json" ||
-    mode === "raw_text" ||
-    mode === "form_urlencoded" ||
-    mode === "multipart"
-    ? mode
-    : "none";
+  if (mode === "raw" || mode === "formdata" || mode === "form_urlencoded" || mode === "binary") {
+    return mode;
+  }
+  // Migrate legacy modes
+  if (mode === "raw_json" || mode === "raw_text") return "raw";
+  if (mode === "multipart") return "formdata";
+  return "none";
+}
+
+function normalizeRawFormat(format: string | null | undefined): RawFormat {
+  if (format === "json" || format === "text" || format === "xml" || format === "javascript" || format === "html") {
+    return format;
+  }
+  return "json";
 }
 
 function clamp(value: number, min: number, max: number) {

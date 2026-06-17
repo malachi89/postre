@@ -1,4 +1,4 @@
-import type { AuthConfig, BodyMode, HttpMethod, KeyValueRow, RequestDraft } from "@/lib/types";
+import type { AuthConfig, BodyMode, HttpMethod, KeyValueRow, RawFormat, RequestDraft } from "@/lib/types";
 import { getAutoHeaders } from "@/lib/auto-headers";
 
 const NO_VALUE_FLAGS = new Set([
@@ -50,7 +50,7 @@ export function requestDraftToCurl(draft: RequestDraft): string {
     lines.push(`  --user ${quoteShell(`${draft.auth.username ?? ""}:${draft.auth.password ?? ""}`)}`);
   }
 
-  if (draft.bodyRaw && (draft.bodyMode === "raw_json" || draft.bodyMode === "raw_text")) {
+  if (draft.bodyRaw && (draft.bodyMode === "raw" || draft.bodyMode === "binary")) {
     lines.push(`  --data-raw ${quoteShell(draft.bodyRaw)}`);
   }
 
@@ -172,7 +172,7 @@ export function parseCurlToRequestDraft(curl: string, currentDraft: RequestDraft
   }
 
   const bodyRaw = dataParts.join("&");
-  const bodyMode = inferBodyMode(bodyRaw);
+  const inferred = inferBodyMode(bodyRaw);
   const parsedUrl = extractQueryParams(url);
 
   return {
@@ -181,7 +181,8 @@ export function parseCurlToRequestDraft(curl: string, currentDraft: RequestDraft
     url: parsedUrl.url,
     headers,
     queryParams: parsedUrl.queryParams,
-    bodyMode,
+    bodyMode: inferred.bodyMode,
+    bodyRawFormat: inferred.bodyRawFormat,
     bodyRaw,
     auth
   };
@@ -384,12 +385,12 @@ function parseBasicAuth(value: string): AuthConfig {
   };
 }
 
-function inferBodyMode(bodyRaw: string): BodyMode {
+function inferBodyMode(bodyRaw: string): { bodyMode: BodyMode; bodyRawFormat: RawFormat } {
   if (!bodyRaw) {
-    return "none";
+    return { bodyMode: "none", bodyRawFormat: "json" };
   }
 
-  return looksLikeJson(bodyRaw) ? "raw_json" : "raw_text";
+  return { bodyMode: "raw", bodyRawFormat: looksLikeJson(bodyRaw) ? "json" : "text" };
 }
 
 function looksLikeJson(value: string): boolean {

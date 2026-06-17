@@ -53,6 +53,7 @@ model Request {
   headersJson     String      @default("[]")
   queryParamsJson String      @default("[]")
   bodyMode        String      @default("none")
+  bodyRawFormat   String      @default("json")
   bodyRaw         String?
   preRequestScript String     @default("")
   postRequestScript String    @default("")

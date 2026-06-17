@@ -133,6 +133,7 @@ async function createImportedItem(
         headers: item.request.headers,
         queryParams: item.request.queryParams,
         bodyMode: item.request.bodyMode,
+        bodyRawFormat: item.request.bodyRawFormat,
         bodyRaw: item.request.bodyRaw,
         preRequestScript: item.request.preRequestScript,
         postRequestScript: item.request.postRequestScript,

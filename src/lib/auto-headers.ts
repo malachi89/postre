@@ -27,22 +27,30 @@ export function getAutoHeaders(draft: RequestDraft): AutoHeader[] {
   return headers;
 }
 
+const RAW_FORMAT_CONTENT_TYPES: Record<string, string> = {
+  json: "application/json",
+  text: "text/plain",
+  xml: "application/xml",
+  javascript: "application/javascript",
+  html: "text/html"
+};
+
 function getAutoContentType(draft: RequestDraft): string | null {
   if (draft.method === "GET" || draft.method === "HEAD" || draft.bodyMode === "none") {
     return null;
   }
 
-  if (!draft.bodyRaw.trim() && draft.bodyMode !== "multipart") {
+  if (!draft.bodyRaw.trim() && draft.bodyMode !== "formdata") {
     return null;
   }
 
   switch (draft.bodyMode) {
-    case "raw_json":
-      return "application/json";
-    case "raw_text":
-      return "text/plain";
+    case "raw":
+      return RAW_FORMAT_CONTENT_TYPES[draft.bodyRawFormat] ?? "text/plain";
     case "form_urlencoded":
       return "application/x-www-form-urlencoded";
+    case "binary":
+      return "application/octet-stream";
     default:
       return null;
   }

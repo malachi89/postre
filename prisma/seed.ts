@@ -77,6 +77,7 @@ async function main() {
               }
             ]),
             bodyMode: "none",
+            bodyRawFormat: "json",
             bodyRaw: "",
             authJson: JSON.stringify({ type: "none" })
           }

@@ -24,6 +24,7 @@ export async function POST(request: NextRequest) {
           headers: body.headers ?? [],
           queryParams: body.queryParams ?? [],
           bodyMode: body.bodyMode ?? "none",
+          bodyRawFormat: body.bodyRawFormat ?? "json",
           bodyRaw: body.bodyRaw ?? "",
           preRequestScript: body.preRequestScript ?? "",
           postRequestScript: body.postRequestScript ?? "",

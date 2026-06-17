@@ -3,6 +3,7 @@ import { inferIsSecret } from "@/lib/secret-utils";
 import type {
   AuthConfig,
   BodyMode,
+  RawFormat,
   HttpMethod,
   ImportKind,
   ImportPreview,
@@ -46,6 +47,7 @@ export interface NormalizedPostmanRequest {
   headers: KeyValueRow[];
   queryParams: KeyValueRow[];
   bodyMode: BodyMode;
+  bodyRawFormat: RawFormat;
   bodyRaw: string;
   preRequestScript: string;
   postRequestScript: string;
@@ -269,6 +271,7 @@ function normalizeRequest(
       headers: [],
       queryParams: [],
       bodyMode: "none",
+      bodyRawFormat: "json",
       bodyRaw: "",
       preRequestScript: scripts.preRequestScript,
       postRequestScript: scripts.postRequestScript,
@@ -289,6 +292,7 @@ function normalizeRequest(
       headers: [],
       queryParams: [],
       bodyMode: "none",
+      bodyRawFormat: "json",
       bodyRaw: "",
       preRequestScript: scripts.preRequestScript,
       postRequestScript: scripts.postRequestScript,
@@ -314,6 +318,7 @@ function normalizeRequest(
     headers: normalizeHeaders(request.header),
     queryParams: urlInfo.queryParams,
     bodyMode: body.bodyMode,
+    bodyRawFormat: body.bodyRawFormat ?? "json",
     bodyRaw: body.bodyRaw,
     preRequestScript: scripts.preRequestScript,
     postRequestScript: scripts.postRequestScript,
@@ -414,7 +419,7 @@ function normalizeBody(
   value: unknown,
   warnings: string[],
   itemName: string
-): { bodyMode: BodyMode; bodyRaw: string } {
+): { bodyMode: BodyMode; bodyRaw: string; bodyRawFormat?: RawFormat } {
   const body = asRecord(value);
 
   if (!body) {
@@ -431,8 +436,15 @@ function normalizeBody(
     const rawOptions = asRecord(body.options);
     const rawLanguage = stringValue(asRecord(rawOptions?.raw)?.language).toLowerCase();
 
+    let bodyRawFormat: RawFormat = "text";
+    if (rawLanguage.includes("json") || looksLikeJson(raw)) bodyRawFormat = "json";
+    else if (rawLanguage.includes("xml")) bodyRawFormat = "xml";
+    else if (rawLanguage.includes("javascript")) bodyRawFormat = "javascript";
+    else if (rawLanguage.includes("html")) bodyRawFormat = "html";
+
     return {
-      bodyMode: rawLanguage.includes("json") || looksLikeJson(raw) ? "raw_json" : "raw_text",
+      bodyMode: "raw" as const,
+      bodyRawFormat,
       bodyRaw: raw
     };
   }
@@ -446,15 +458,14 @@ function normalizeBody(
       }
     }
     return {
-      bodyMode: "form_urlencoded",
+      bodyMode: "form_urlencoded" as const,
       bodyRaw: form.toString()
     };
   }
 
   if (mode === "formdata") {
-    warnings.push(`Request "${itemName}" uses multipart/form-data; it was preserved as metadata for a later version.`);
     return {
-      bodyMode: "multipart",
+      bodyMode: "formdata" as const,
       bodyRaw: JSON.stringify(body.formdata ?? [], null, 2)
     };
   }

@@ -12,10 +12,12 @@ export type HttpMethod = (typeof HTTP_METHODS)[number];
 
 export type BodyMode =
   | "none"
-  | "raw_json"
-  | "raw_text"
+  | "formdata"
   | "form_urlencoded"
-  | "multipart";
+  | "raw"
+  | "binary";
+
+export type RawFormat = "json" | "text" | "xml" | "javascript" | "html";
 
 export type VariableScope = "GLOBAL" | "ENVIRONMENT" | "COLLECTION" | "REQUEST";
 
@@ -61,6 +63,7 @@ export interface RequestDraft {
   headers: KeyValueRow[];
   queryParams: KeyValueRow[];
   bodyMode: BodyMode;
+  bodyRawFormat: RawFormat;
   bodyRaw: string;
   preRequestScript: string;
   postRequestScript: string;
