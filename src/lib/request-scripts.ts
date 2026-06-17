@@ -13,7 +13,7 @@ import type {
   SendResult,
   VariableScope
 } from "@/lib/types";
-import type { VariableBuckets } from "@/lib/variable-resolver";
+import { resolveTemplate, type VariableBuckets } from "@/lib/variable-resolver";
 
 // ---------------------------------------------------------------------------
 // Built-in module loader for the script sandbox (supports `require()`)
@@ -144,6 +144,9 @@ export async function runRequestScript(input: RequestScriptInput): Promise<Reque
     hasActiveEnvironment: Boolean(input.activeEnvironmentId)
   };
 
+  // Resolve {{var}} template syntax in scripts (like URLs/headers/body)
+  const resolvedScript = resolveTemplate(script, input.variables).value;
+
   const started = Date.now();
   const timeoutMs = input.timeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS;
   const QuickJS = await getQuickJS();
@@ -176,7 +179,7 @@ export async function runRequestScript(input: RequestScriptInput): Promise<Reque
   sendRequestHandle.dispose();
 
   try {
-    const evaluation = vm.evalCode(buildScriptSource(state, script, SUPPORTED_MODULES), `${input.phase}.js`);
+    const evaluation = vm.evalCode(buildScriptSource(state, resolvedScript, SUPPORTED_MODULES), `${input.phase}.js`);
     if (evaluation.error) {
       result.ok = false;
       result.error = formatScriptError(vm.dump(evaluation.error));
