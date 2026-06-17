@@ -377,6 +377,69 @@ function renderSyntaxHighlightedHtml(value: string, variableLookup: VariableLook
   return renderXmlHighlightHtml(value, variableLookup);
 }
 
+function renderEditableSyntaxHighlightedHtml(value: string, format: "json" | "xml") {
+  if (format === "json") {
+    return renderEditableJsonHighlightHtml(value);
+  }
+  return renderEditableXmlHighlightHtml(value);
+}
+
+function renderEditableJsonHighlightHtml(value: string) {
+  const parts: string[] = [];
+  const regex = /("(?:\\.|[^"\\])*")|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|(true|false|null)|([{}[\],:])/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(value))) {
+    if (match.index > lastIndex) {
+      parts.push(escapeHtml(value.slice(lastIndex, match.index)));
+    }
+
+    const [token, stringToken, numberToken, literalToken] = match;
+    const nextNonSpace = value.slice(match.index + token.length).match(/\S/)?.[0] ?? "";
+    const color = stringToken
+      ? nextNonSpace === ":" ? "#7dd3fc" : "#86efac"
+      : numberToken
+        ? "#fbbf24"
+        : literalToken === "null"
+          ? "#fda4af"
+          : literalToken
+            ? "#c4b5fd"
+            : "#94a3b8";
+
+    parts.push(`<span style="color:${color}">${escapeHtml(token)}</span>`);
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < value.length) {
+    parts.push(escapeHtml(value.slice(lastIndex)));
+  }
+
+  return parts.join("");
+}
+
+function renderEditableXmlHighlightHtml(value: string) {
+  const parts: string[] = [];
+  const regex = /(<\/?[^>]+>)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(value))) {
+    if (match.index > lastIndex) {
+      parts.push(escapeHtml(value.slice(lastIndex, match.index)));
+    }
+
+    parts.push(`<span style="color:#7dd3fc">${escapeHtml(match[0])}</span>`);
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < value.length) {
+    parts.push(escapeHtml(value.slice(lastIndex)));
+  }
+
+  return parts.join("");
+}
+
 function renderJsonHighlightHtml(value: string, variableLookup: VariableLookup) {
   const parts: string[] = [];
   const regex = /("(?:\\.|[^"\\])*")|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|(true|false|null)|([{}[\],:])/g;
@@ -506,6 +569,10 @@ function TokenizedField({
     activeIndex: number;
   } | null>(null);
   const plainHtml = useMemo(() => escapeHtml(value), [value]);
+  const editableHighlightedHtml = useMemo(
+    () => syntaxHighlight ? renderEditableSyntaxHighlightedHtml(value, syntaxHighlight) : null,
+    [value, syntaxHighlight]
+  );
   const tokenizedHtml = useMemo(
     () => syntaxHighlight ? renderSyntaxHighlightedHtml(value, variableLookup, syntaxHighlight) : renderTokenizedHtml(value, variableLookup),
     [value, variableLookup, syntaxHighlight]
@@ -524,8 +591,14 @@ function TokenizedField({
 
     const isEditing = isFocused || document.activeElement === element;
     if (isEditing) {
-      if (readEditableText(element, multiline) !== value || element.innerHTML !== plainHtml) {
-        element.textContent = value;
+      if (editableHighlightedHtml) {
+        if (readEditableText(element, multiline) !== value || element.innerHTML !== editableHighlightedHtml) {
+          element.innerHTML = editableHighlightedHtml;
+        }
+      } else {
+        if (readEditableText(element, multiline) !== value || element.innerHTML !== plainHtml) {
+          element.textContent = value;
+        }
       }
     } else if (element.innerHTML !== tokenizedHtml) {
       element.innerHTML = tokenizedHtml;
@@ -623,7 +696,7 @@ function TokenizedField({
         ref={ref}
         className={[
           "w-full rounded border font-mono text-xs outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100",
-          syntaxHighlight && !isFocused && value
+          syntaxHighlight && value
             ? "border-slate-700 bg-slate-950 text-slate-50"
             : "border-slate-300 bg-white text-slate-900",
           multiline
@@ -2346,7 +2419,7 @@ className="inline-flex h-8 w-8 items-center justify-center rounded border border
             ) : null}
             {draft ? (
               <div ref={responseSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="min-h-0 flex-1 overflow-hidden">
+                <div className="flex-1 overflow-auto" style={{ minHeight: REQUEST_EDITOR_MIN_HEIGHT }}>
                   <RequestEditor
                     draft={draft}
                     busy={busy}
