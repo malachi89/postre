@@ -112,7 +112,7 @@ type BodyViewMode = "edit" | "pretty" | "preview";
 type BodyFormat = "json" | "xml" | "text";
 
 const EMPTY_AUTH: AuthConfig = { type: "none" };
-const REQUEST_TABS = ["body", "auth", "headers", "query", "scripts"] as const;
+const REQUEST_TABS = ["body", "auth", "headers", "query", "scripts", "code"] as const;
 type RequestTab = (typeof REQUEST_TABS)[number];
 const SCRIPT_TABS = ["pre-request", "post-request"] as const;
 type ScriptTab = (typeof SCRIPT_TABS)[number];
@@ -577,7 +577,8 @@ function TokenizedField({
   disabled = false,
   multiline = false,
   className = "",
-  syntaxHighlight
+  syntaxHighlight,
+  fillHeight = false
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -588,6 +589,7 @@ function TokenizedField({
   multiline?: boolean;
   className?: string;
   syntaxHighlight?: "json" | "xml";
+  fillHeight?: boolean;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const selectionRef = useRef<SelectionOffsets | null>(null);
@@ -711,7 +713,7 @@ function TokenizedField({
   }
 
   return (
-    <div className="relative">
+    <div className={fillHeight ? "relative flex min-h-0 flex-col" : "relative"}>
       {!value ? (
         <span
           className={`pointer-events-none absolute left-0 top-0 select-none text-sm text-slate-400 ${
@@ -729,7 +731,9 @@ function TokenizedField({
             ? "border-slate-700 bg-slate-950 text-slate-50"
             : "border-slate-300 bg-white text-slate-900",
           multiline
-            ? "min-h-64 max-h-[32rem] overflow-y-auto whitespace-pre-wrap break-words p-2 leading-5"
+            ? fillHeight
+              ? "min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words p-2 leading-5"
+              : "min-h-64 max-h-[32rem] overflow-y-auto whitespace-pre-wrap break-words p-2 leading-5"
             : "min-h-[2.25rem] overflow-x-auto overflow-y-hidden whitespace-pre px-3 py-1.5 leading-5",
           disabled ? "cursor-not-allowed bg-slate-50 text-slate-400" : "",
           className
@@ -2458,7 +2462,7 @@ className="inline-flex h-8 w-8 items-center justify-center rounded border border
             ) : null}
             {draft ? (
               <div ref={responseSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="min-h-0 flex-1 overflow-hidden">
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                   <RequestEditor
                     draft={draft}
                     busy={busy}
@@ -3093,7 +3097,6 @@ function RequestEditor({
 }) {
   const [activeTab, setActiveTab] = useState<RequestTab | null>("body");
   const [activeScriptTab, setActiveScriptTab] = useState<ScriptTab>("pre-request");
-  const [showCodePanel, setShowCodePanel] = useState(false);
   const [showSendMenu, setShowSendMenu] = useState(false);
   const [curlError, setCurlError] = useState<string | null>(null);
   const [curlNotice, setCurlNotice] = useState<string | null>(null);
@@ -3239,7 +3242,9 @@ function RequestEditor({
                         ? "Query Params"
                         : tab === "body"
                           ? "Body"
-                          : "Scripts";
+                          : tab === "code"
+                            ? "Code"
+                            : "Scripts";
                 const active = activeTab === tab;
 
                 return (
@@ -3343,208 +3348,155 @@ function RequestEditor({
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="min-h-0 flex-1 overflow-auto p-1.5">
-          <div className="grid gap-1.5">
-            {activeTab ? (
-              <>
-                {activeTab === "auth" ? (
-                  <EditorSection title="Auth">
-                    <AuthEditor
-                      auth={draft.auth}
-                      variableLookup={variableLookup}
-                      onChange={(auth) => onChange({ ...draft, auth })}
-                    />
-                  </EditorSection>
-                ) : null}
-
-                {activeTab === "headers" ? (
-                  <EditorSection title="Headers">
-                    <KeyValueTable
-                      rows={draft.headers}
-                      variableLookup={variableLookup}
-                      onChange={(headers) => onChange({ ...draft, headers })}
-                      addLabel="Add header"
-                    />
-                    <AutoHeadersDisplay draft={draft} />
-                  </EditorSection>
-                ) : null}
-
-                {activeTab === "query" ? (
-                  <EditorSection title="Query Params">
-                    <KeyValueTable
-                      rows={draft.queryParams}
-                      variableLookup={variableLookup}
-                      onChange={handleQueryParamsChange}
-                      addLabel="Add param"
-                    />
-                  </EditorSection>
-                ) : null}
-
-                {activeTab === "body" ? (
-                  <section className="rounded border border-slate-200 bg-white p-2 shadow-panel">
-                    <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <h2 className="text-sm font-semibold text-slate-700">Body</h2>
-                      {(["none", "formdata", "form_urlencoded", "raw", "binary"] as const).map((mode) => (
-                        <label key={mode} className="flex cursor-pointer items-center gap-1 text-xs">
-                          <input
-                            type="radio"
-                            name="bodyMode"
-                            className="text-teal-600 accent-teal-600"
-                            checked={draft.bodyMode === mode}
-                            onChange={() => onChange({ ...draft, bodyMode: mode })}
-                          />
-                          {mode === "none" ? "none" : mode === "formdata" ? "form-data" : mode === "form_urlencoded" ? "x-www-form-urlencoded" : mode === "raw" ? "raw" : "binary"}
-                        </label>
-                      ))}
-                      {draft.bodyMode === "raw" ? (
-                        <select
-                          className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-slate-700"
-                          value={draft.bodyRawFormat}
-                          onChange={(e) => onChange({ ...draft, bodyRawFormat: e.target.value as RawFormat })}
-                        >
-                          <option value="text">Text</option>
-                          <option value="javascript">JavaScript</option>
-                          <option value="json">JSON</option>
-                          <option value="html">HTML</option>
-                          <option value="xml">XML</option>
-                        </select>
-                      ) : null}
-                      {draft.bodyMode === "raw" && draft.bodyRawFormat === "json" && draft.bodyRaw.trim() ? (
-                        <button
-                          className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold text-slate-500 hover:bg-slate-100"
-                          onClick={() => {
-                            try {
-                              const formatted = JSON.stringify(JSON.parse(draft.bodyRaw), null, 2);
-                              onChange({ ...draft, bodyRaw: formatted });
-                            } catch {
-                              // ignore invalid JSON
-                            }
-                          }}
-                          type="button"
-                        >
-                          <FileJson size={14} />
-                          Format
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="grid gap-2">
-                      <TokenizedField
-                        className="resize-y"
-                        value={draft.bodyRaw}
-                        disabled={draft.bodyMode === "none"}
-                        onChange={(value) => onChange({ ...draft, bodyRaw: value })}
-                        placeholder={draft.bodyMode === "raw" && draft.bodyRawFormat === "json" ? '{\n  "name": "PostRE"\n}' : ""}
-                        aria-label="Request body"
-                        variableLookup={variableLookup}
-                        multiline
-                        syntaxHighlight={
-                          draft.bodyMode === "raw" && draft.bodyRawFormat === "json" ? "json"
-                          : draft.bodyMode === "raw" && (draft.bodyRawFormat === "xml" || draft.bodyRawFormat === "html") ? "xml"
-                          : undefined
-                        }
-                      />
-                    </div>
-                  </section>
-                ) : null}
-
-                {activeTab === "scripts" ? (
-                  <EditorSection title="Scripts">
-                    <ScriptTextEditor
-                      activeScriptTab={activeScriptTab}
-                      preRequestScript={draft.preRequestScript}
-                      postRequestScript={draft.postRequestScript}
-                      onTabChange={setActiveScriptTab}
-                      onPreRequestScriptChange={(preRequestScript) => onChange({ ...draft, preRequestScript })}
-                      onPostRequestScriptChange={(postRequestScript) => onChange({ ...draft, postRequestScript })}
-                    />
-                  </EditorSection>
-                ) : null}
-              </>
+        {activeTab === "body" ? (
+          <section className="flex min-h-0 flex-1 flex-col rounded border border-slate-200 bg-white p-2 shadow-panel">
+            <div className="mb-1 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <h2 className="text-sm font-semibold text-slate-700">Body</h2>
+              {(["none", "formdata", "form_urlencoded", "raw", "binary"] as const).map((mode) => (
+                <label key={mode} className="flex cursor-pointer items-center gap-1 text-xs">
+                  <input
+                    type="radio"
+                    name="bodyMode"
+                    className="text-teal-600 accent-teal-600"
+                    checked={draft.bodyMode === mode}
+                    onChange={() => onChange({ ...draft, bodyMode: mode })}
+                  />
+                  {mode === "none" ? "none" : mode === "formdata" ? "form-data" : mode === "form_urlencoded" ? "x-www-form-urlencoded" : mode === "raw" ? "raw" : "binary"}
+                </label>
+              ))}
+              {draft.bodyMode === "raw" ? (
+                <select
+                  className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-slate-700"
+                  value={draft.bodyRawFormat}
+                  onChange={(e) => onChange({ ...draft, bodyRawFormat: e.target.value as RawFormat })}
+                >
+                  <option value="text">Text</option>
+                  <option value="javascript">JavaScript</option>
+                  <option value="json">JSON</option>
+                  <option value="html">HTML</option>
+                  <option value="xml">XML</option>
+                </select>
+              ) : null}
+              {draft.bodyMode === "raw" && draft.bodyRawFormat === "json" && draft.bodyRaw.trim() ? (
+                <button
+                  className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold text-slate-500 hover:bg-slate-100"
+                  onClick={() => {
+                    try {
+                      const formatted = JSON.stringify(JSON.parse(draft.bodyRaw), null, 2);
+                      onChange({ ...draft, bodyRaw: formatted });
+                    } catch {
+                      // ignore invalid JSON
+                    }
+                  }}
+                  type="button"
+                >
+                  <FileJson size={14} />
+                  Format
+                </button>
+              ) : null}
+            </div>
+            <TokenizedField
+              fillHeight
+              value={draft.bodyRaw}
+              disabled={draft.bodyMode === "none"}
+              onChange={(value) => onChange({ ...draft, bodyRaw: value })}
+              placeholder={draft.bodyMode === "raw" && draft.bodyRawFormat === "json" ? '{\n  "name": "PostRE"\n}' : ""}
+              aria-label="Request body"
+              variableLookup={variableLookup}
+              multiline
+              syntaxHighlight={
+                draft.bodyMode === "raw" && draft.bodyRawFormat === "json" ? "json"
+                : draft.bodyMode === "raw" && (draft.bodyRawFormat === "xml" || draft.bodyRawFormat === "html") ? "xml"
+                : undefined
+              }
+            />
+          </section>
+        ) : activeTab === "code" ? (
+          <section className="flex min-h-0 flex-1 flex-col rounded border border-slate-200 bg-white p-1.5 shadow-panel">
+            <div className="flex shrink-0 items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-slate-700">Code</h2>
+              <p className="text-xs text-slate-500">cURL</p>
+              <div className="flex items-center gap-1">
+                <IconButton label="Copy cURL" onClick={() => void copyCurl()}>
+                  <Copy size={16} />
+                </IconButton>
+              </div>
+            </div>
+            <textarea
+              className="min-h-0 w-full flex-1 resize-none rounded border border-slate-300 bg-white p-2 font-mono text-xs leading-5 text-slate-900"
+              value={generatedCurl}
+              onPaste={(event) => applyPastedCurl(event.clipboardData.getData("text"))}
+              readOnly
+              aria-label="cURL"
+            />
+            {curlError ? (
+              <p className="mt-1 shrink-0 rounded border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700">
+                {curlError}
+              </p>
             ) : null}
-          </div>
-        </div>
-        {showCodePanel ? (
-          <CurlCodePanel
-            generatedCurl={generatedCurl}
-            curlNotice={curlNotice}
-            curlError={curlError}
-            onCopyCurl={() => void copyCurl()}
-            onCurlPaste={applyPastedCurl}
-            onClose={() => setShowCodePanel(false)}
-          />
+            {curlNotice ? (
+              <p className="mt-1 shrink-0 rounded border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-800">
+                {curlNotice}
+              </p>
+            ) : null}
+          </section>
         ) : (
-          <button
-            className="flex items-center border-l border-slate-200 bg-slate-50 px-1 text-slate-400 hover:text-slate-600"
-            onClick={() => setShowCodePanel(true)}
-            title="Show code panel"
-            type="button"
-          >
-            <ChevronLeft size={16} />
-          </button>
+          <div className="min-h-0 flex-1 overflow-auto p-1.5">
+            <div className="grid gap-1.5">
+              {activeTab ? (
+                <>
+                  {activeTab === "auth" ? (
+                    <EditorSection title="Auth">
+                      <AuthEditor
+                        auth={draft.auth}
+                        variableLookup={variableLookup}
+                        onChange={(auth) => onChange({ ...draft, auth })}
+                      />
+                    </EditorSection>
+                  ) : null}
+
+                  {activeTab === "headers" ? (
+                    <EditorSection title="Headers">
+                      <KeyValueTable
+                        rows={draft.headers}
+                        variableLookup={variableLookup}
+                        onChange={(headers) => onChange({ ...draft, headers })}
+                        addLabel="Add header"
+                      />
+                      <AutoHeadersDisplay draft={draft} />
+                    </EditorSection>
+                  ) : null}
+
+                  {activeTab === "query" ? (
+                    <EditorSection title="Query Params">
+                      <KeyValueTable
+                        rows={draft.queryParams}
+                        variableLookup={variableLookup}
+                        onChange={handleQueryParamsChange}
+                        addLabel="Add param"
+                      />
+                    </EditorSection>
+                  ) : null}
+
+                  {activeTab === "scripts" ? (
+                    <EditorSection title="Scripts">
+                      <ScriptTextEditor
+                        activeScriptTab={activeScriptTab}
+                        preRequestScript={draft.preRequestScript}
+                        postRequestScript={draft.postRequestScript}
+                        onTabChange={setActiveScriptTab}
+                        onPreRequestScriptChange={(preRequestScript) => onChange({ ...draft, preRequestScript })}
+                        onPostRequestScriptChange={(postRequestScript) => onChange({ ...draft, postRequestScript })}
+                      />
+                    </EditorSection>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          </div>
         )}
       </div>
     </div>
-  );
-}
-
-function CurlCodePanel({
-  generatedCurl,
-  curlNotice,
-  curlError,
-  onCopyCurl,
-  onCurlPaste,
-  onClose
-}: {
-  generatedCurl: string;
-  curlNotice: string | null;
-  curlError: string | null;
-  onCopyCurl: () => void;
-  onCurlPaste: (text: string) => void;
-  onClose: () => void;
-}) {
-  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const pastedText = event.clipboardData.getData("text");
-    if (pastedText.trim()) {
-      onCurlPaste(pastedText);
-    }
-  }
-
-  return (
-    <aside className="flex min-h-[360px] min-w-0 flex-col gap-2 border-t border-slate-200 bg-slate-50 p-2 lg:min-h-0 lg:w-[360px] lg:shrink-0 lg:border-l lg:border-t-0">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-700">Code</h2>
-          <p className="text-xs text-slate-500">cURL</p>
-        </div>
-        <div className="flex items-center gap-1">
-          <IconButton label="Copy cURL" onClick={onCopyCurl}>
-            <Copy size={16} />
-          </IconButton>
-          <IconButton label="Hide code" onClick={onClose}>
-            <ChevronRight size={16} />
-          </IconButton>
-        </div>
-      </div>
-
-      <textarea
-        className="min-h-40 w-full flex-1 resize-y rounded border border-slate-300 bg-white p-2 font-mono text-xs leading-5 text-slate-900"
-        value={generatedCurl}
-        onPaste={handlePaste}
-        readOnly
-        aria-label="cURL"
-      />
-
-      {curlError ? (
-        <p className="rounded border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700">
-          {curlError}
-        </p>
-      ) : null}
-      {curlNotice ? (
-        <p className="rounded border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-800">
-          {curlNotice}
-        </p>
-      ) : null}
-    </aside>
   );
 }
 
