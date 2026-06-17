@@ -121,6 +121,21 @@ describe("request script runtime", () => {
     ]);
   });
 
+  it("loads crypto-js via require() and exposes CryptoJS", async () => {
+    const run = await runRequestScript({
+      phase: "pre-request",
+      script: `
+        const crypto = require('crypto-js');
+        console.log(typeof crypto.SHA256);
+      `,
+      draft: draft(),
+      variables: buckets(),
+      activeEnvironmentId: "env-1"
+    });
+
+    expect(run.result).toMatchObject({ ok: true, logs: ["function"] });
+  });
+
   it("fails scripts that exceed the timeout", async () => {
     const run = await runRequestScript({
       phase: "pre-request",

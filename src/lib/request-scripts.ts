@@ -15,8 +15,62 @@ import type {
 } from "@/lib/types";
 import type { VariableBuckets } from "@/lib/variable-resolver";
 
+// ---------------------------------------------------------------------------
+// Built-in module loader for the script sandbox (supports `require()`)
+// ---------------------------------------------------------------------------
+
+const BUILTIN_MODULE_SOURCES = new Map<string, string>();
+
+function getBuiltinModuleSource(moduleName: string): string | null {
+  if (BUILTIN_MODULE_SOURCES.has(moduleName)) {
+    return BUILTIN_MODULE_SOURCES.get(moduleName)!;
+  }
+
+  // Map of supported modules to their bundled UMD file inside node_modules
+  const bundlePaths: Record<string, string> = {
+    "crypto-js": "crypto-js/crypto-js.js"
+  };
+
+  const bundleRelative = bundlePaths[moduleName];
+  if (!bundleRelative) {
+    return null;
+  }
+
+  try {
+    const fullPath = join(process.cwd(), "node_modules", bundleRelative);
+    const source = readFileSync(fullPath, "utf-8");
+    BUILTIN_MODULE_SOURCES.set(moduleName, source);
+    return source;
+  } catch (e) {
+    console.error("[request-scripts] Failed to load builtin module", moduleName, e);
+    return null;
+  }
+}
+
+function buildModuleLoaderSource(modules: string[]): string {
+  const loaders: string[] = [];
+  for (const name of modules) {
+    const source = getBuiltinModuleSource(name);
+    if (!source) continue;
+    // Each module is lazily initialised on first require() call.
+    // The factory runs the UMD source inside a CommonJS-style wrapper
+    // (outside strict-mode so `this` resolves correctly for UMD patterns).
+    loaders.push(
+      `__moduleFactories[${JSON.stringify(name)}] = function () {\n` +
+      `  var module = { exports: {} };\n` +
+      `  var exports = module.exports;\n` +
+      `  var define = undefined;\n` +
+      `  ${source}\n` +
+      `  return module.exports;\n` +
+      `};\n`
+    );
+  }
+  return loaders.join("\n");
+}
+
+const SUPPORTED_MODULES = ["crypto-js"];
 const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
-const SCRIPT_MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
+const SCRIPT_MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
 const SCRIPT_STACK_SIZE_BYTES = 512 * 1024;
 const SEND_REQUEST_TIMEOUT_SECS = 30;
 
@@ -122,7 +176,7 @@ export async function runRequestScript(input: RequestScriptInput): Promise<Reque
   sendRequestHandle.dispose();
 
   try {
-    const evaluation = vm.evalCode(buildScriptSource(state, script), `${input.phase}.js`);
+    const evaluation = vm.evalCode(buildScriptSource(state, script, SUPPORTED_MODULES), `${input.phase}.js`);
     if (evaluation.error) {
       result.ok = false;
       result.error = formatScriptError(vm.dump(evaluation.error));
@@ -210,10 +264,24 @@ function mutationWhere(
   return { scope: "REQUEST" as const, requestId: draft.id, key: mutation.key };
 }
 
-function buildScriptSource(state: ScriptState, script: string): string {
+function buildScriptSource(state: ScriptState, script: string, modules: string[] = []): string {
+  // Module factories are injected outside "use strict" so UMD `this` works
+  const moduleFactorySource = modules.length > 0 ? buildModuleLoaderSource(modules) : "";
+
   return `
 (function () {
-  "use strict";
+  var __moduleFactories = {};
+  var __moduleCache = {};
+  ${moduleFactorySource}
+  function require(name) {
+    if (__moduleCache[name]) return __moduleCache[name];
+    if (__moduleFactories[name]) {
+      __moduleCache[name] = __moduleFactories[name]();
+      return __moduleCache[name];
+    }
+    throw new Error("Cannot find module '" + name + "'. Supported built-in modules: ${SUPPORTED_MODULES.join(", ")}");
+  }
+
   var __state = ${JSON.stringify(state)};
   var __mutations = [];
 
