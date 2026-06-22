@@ -16,21 +16,10 @@ PostRE is a local, personal Postman-like HTTP client. It runs on localhost, stor
 After cloning, install the local runner once. It keeps PostRE running on
 http://localhost:5500 and starts it again when the computer restarts.
 
-Windows:
-
-```powershell
-git clone <repo-url>
-cd postre
-powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1
-```
-
-macOS:
-
 ```bash
 git clone <repo-url>
 cd postre
-chmod +x scripts/*.sh
-./scripts/install-macos.sh
+node scripts/run.mjs install
 ```
 
 Open http://localhost:5500 after the initial npm and Prisma setup finishes.
@@ -46,11 +35,32 @@ git pull
 The local runner watches the repo, reruns the needed setup steps, and restarts
 the server when updates land.
 
-To stop the local runner:
+### Managing the local runner
+
+All commands work on both macOS and Windows:
 
 ```bash
-npm run local:stop:win  # Windows
-npm run local:stop:mac  # macOS
+node scripts/run.mjs start      # start the runner
+node scripts/run.mjs stop       # stop the runner
+node scripts/run.mjs install    # install as a background service and start
+node scripts/run.mjs uninstall  # remove the background service
+```
+
+On macOS the runner is managed via a LaunchAgent; on Windows it uses a
+Scheduled Task. You can also use the platform-specific scripts directly:
+
+```bash
+# macOS
+./scripts/install-macos.sh
+./scripts/start-macos.sh
+./scripts/stop-macos.sh
+./scripts/uninstall-macos.sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/stop-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/uninstall-windows.ps1
 ```
 
 ### Manual development
@@ -74,9 +84,8 @@ npm run lint     # ESLint
 npm run test     # unit tests
 npm run db:push  # sync SQLite schema
 npm run db:seed  # optional demo data
-npm run local:run          # run the autostart-compatible local runner
-npm run local:install:win  # install Windows logon startup task
-npm run local:install:mac  # install macOS LaunchAgent
+npm run local:run                   # run the local runner directly
+node scripts/run.mjs [action]       # cross-platform: install|start|stop|uninstall
 ```
 
 ## MVP Scope
