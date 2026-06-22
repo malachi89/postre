@@ -454,24 +454,39 @@ function killTree(pid) {
     return;
   }
 
-  try {
-    if (process.platform === "win32") {
+  if (process.platform === "win32") {
+    try {
       spawnSync("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore" });
-    } else {
-      process.kill(-pid, "SIGTERM");
-      setTimeout(() => {
-        if (isProcessAlive(pid)) {
-          try {
-            process.kill(-pid, "SIGKILL");
-          } catch {
-            // Process already exited.
-          }
-        }
-      }, 5000).unref();
+    } catch {
+      // fall through to direct kill
     }
-  } catch (error) {
-    log(`Could not stop process tree ${pid}: ${formatError(error)}`);
   }
+
+  // Try process group first (SIGTERM)
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    // Fallback: kill the process directly
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Process may already be gone
+    }
+  }
+
+  setTimeout(() => {
+    if (isProcessAlive(pid)) {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Process already exited.
+        }
+      }
+    }
+  }, 5000).unref();
 }
 
 function isProcessAlive(pid) {

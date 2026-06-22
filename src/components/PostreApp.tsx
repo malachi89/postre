@@ -622,12 +622,10 @@ function TokenizedField({
 
     const isEditing = isFocused || document.activeElement === element;
     if (isEditing) {
-      if (editableHighlightedHtml) {
-        if (readEditableText(element, multiline) !== value || element.innerHTML !== editableHighlightedHtml) {
+      if (readEditableText(element, multiline) !== value) {
+        if (editableHighlightedHtml) {
           element.innerHTML = editableHighlightedHtml;
-        }
-      } else {
-        if (readEditableText(element, multiline) !== value || element.innerHTML !== plainHtml) {
+        } else {
           element.textContent = value;
         }
       }
