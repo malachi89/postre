@@ -7,7 +7,7 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 lsof -ti :5500 2>/dev/null | xargs kill -9 2>/dev/null || true
 
 cd "$repo_root"
-(npm run dev > /dev/null 2>&1 &)
+(npm run start > /dev/null 2>&1 &)
 
 echo "PostRE Local started."
 echo "Open http://localhost:5500 after startup finishes."
