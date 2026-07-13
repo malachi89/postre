@@ -743,6 +743,13 @@ function TokenizedField({
         role="textbox"
         aria-label={ariaLabel}
         aria-multiline={multiline}
+        onPaste={(event) => {
+          event.preventDefault();
+          const text = event.clipboardData.getData("text/plain");
+          if (text) {
+            document.execCommand("insertText", false, text);
+          }
+        }}
         onInput={() => {
           if (!isComposingRef.current) {
             syncValue();
