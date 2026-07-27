@@ -4392,6 +4392,13 @@ function CollectionRunnerModal({
   );
 }
 
+function avgDuration(steps: ApiCollectionRunStep[]): string {
+  const durations = steps.map(s => s.durationMs).filter((d): d is number => d !== null)
+  if (!durations.length) return "—"
+  const avg = durations.reduce((a, b) => a + b, 0) / durations.length
+  return `${Math.round(avg)} ms`
+}
+
 function CollectionRunReportView({ report }: { report: ApiCollectionRunReport }) {
   return (
     <div className="flex min-h-0 flex-col gap-2">
@@ -4401,6 +4408,7 @@ function CollectionRunReportView({ report }: { report: ApiCollectionRunReport })
           <SummaryChip label="Steps" value={`${report.run.completedSteps}/${report.run.totalSteps}`} />
           <SummaryChip label="Success" value={String(report.run.successCount)} tone="teal" />
           <SummaryChip label="Errors" value={String(report.run.errorCount)} tone={report.run.errorCount ? "amber" : "slate"} />
+          <SummaryChip label="Avg Time" value={avgDuration(report.steps)} tone="amber" />
         </div>
         <div className="grid gap-2 text-sm text-slate-600">
           <PreviewRow label="Target" value={`${report.run.targetType}: ${report.run.targetName}`} />
