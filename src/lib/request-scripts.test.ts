@@ -136,6 +136,67 @@ describe("request script runtime", () => {
     expect(run.result).toMatchObject({ ok: true, logs: ["function"] });
   });
 
+  it("loads moment via require()", async () => {
+    const run = await runRequestScript({
+      phase: "pre-request",
+      script: `
+        const moment = require('moment');
+        console.log(typeof moment().format);
+      `,
+      draft: draft(),
+      variables: buckets(),
+      activeEnvironmentId: "env-1"
+    });
+
+    expect(run.result).toMatchObject({ ok: true, logs: ["function"] });
+  });
+
+  it("loads underscore via require()", async () => {
+    const run = await runRequestScript({
+      phase: "pre-request",
+      script: `
+        const _ = require('underscore');
+        console.log(typeof _.map);
+      `,
+      draft: draft(),
+      variables: buckets(),
+      activeEnvironmentId: "env-1"
+    });
+
+    expect(run.result).toMatchObject({ ok: true, logs: ["function"] });
+  });
+
+  it("loads tv4 via require()", async () => {
+    const run = await runRequestScript({
+      phase: "pre-request",
+      script: `
+        const tv4 = require('tv4');
+        console.log(typeof tv4.validate);
+      `,
+      draft: draft(),
+      variables: buckets(),
+      activeEnvironmentId: "env-1"
+    });
+
+    expect(run.result).toMatchObject({ ok: true, logs: ["function"] });
+  });
+
+  it("loads chai via require()", async () => {
+    const run = await runRequestScript({
+      phase: "pre-request",
+      script: `
+        const chai = require('chai');
+        console.log(typeof chai.expect);
+      `,
+      draft: draft(),
+      variables: buckets(),
+      activeEnvironmentId: "env-1"
+    });
+
+    console.log("CHAI ERROR", run.result.error);
+    expect(run.result).toMatchObject({ ok: true, logs: ["function"] });
+  });
+
   it("fails scripts that exceed the timeout", async () => {
     const run = await runRequestScript({
       phase: "pre-request",

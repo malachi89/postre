@@ -37,6 +37,7 @@ import type { ReactNode } from "react";
 import type {
   ApiCollection,
   ApiCollectionRunReport,
+  ApiCollectionRunStep,
   ApiCookie,
   ApiEnvironment,
   ApiFolder,

@@ -21,6 +21,23 @@ import { resolveTemplate, type VariableBuckets } from "@/lib/variable-resolver";
 
 const BUILTIN_MODULE_SOURCES = new Map<string, string>();
 
+// Convert ESM `export { ... }` to CommonJS `module.exports = { ... }`
+// so ESM-only packages (like chai v6) work inside the CJS factory wrapper.
+function convertEsmExportsToCjs(source: string): string {
+  return source.replace(
+    /export\s*\{([^}]+)\}\s*;?\s*$/,
+    (_, exportsBlock: string) => {
+      const entries = exportsBlock.split(",").map((s: string) => s.trim()).filter(Boolean);
+      const props = entries.map((entry: string) => {
+        const parts = entry.split(/\s+as\s+/);
+        if (parts.length === 2) return `${parts[1].trim()}: ${parts[0].trim()}`;
+        return entry;
+      });
+      return `module.exports = { ${props.join(", ")} };`;
+    },
+  );
+}
+
 function getBuiltinModuleSource(moduleName: string): string | null {
   if (BUILTIN_MODULE_SOURCES.has(moduleName)) {
     return BUILTIN_MODULE_SOURCES.get(moduleName)!;
@@ -28,7 +45,11 @@ function getBuiltinModuleSource(moduleName: string): string | null {
 
   // Map of supported modules to their bundled UMD file inside node_modules
   const bundlePaths: Record<string, string> = {
-    "crypto-js": "crypto-js/crypto-js.js"
+    "crypto-js": "crypto-js/crypto-js.js",
+    moment: "moment/moment.js",
+    underscore: "underscore/underscore.js",
+    tv4: "tv4/tv4.js",
+    chai: "chai/index.js",
   };
 
   const bundleRelative = bundlePaths[moduleName];
@@ -50,8 +71,10 @@ function getBuiltinModuleSource(moduleName: string): string | null {
 function buildModuleLoaderSource(modules: string[]): string {
   const loaders: string[] = [];
   for (const name of modules) {
-    const source = getBuiltinModuleSource(name);
+    let source = getBuiltinModuleSource(name);
     if (!source) continue;
+    // ESM-only packages need their `export { ... }` converted to CJS
+    source = convertEsmExportsToCjs(source);
     // Each module is lazily initialised on first require() call.
     // The factory runs the UMD source inside a CommonJS-style wrapper
     // (outside strict-mode so `this` resolves correctly for UMD patterns).
@@ -68,7 +91,7 @@ function buildModuleLoaderSource(modules: string[]): string {
   return loaders.join("\n");
 }
 
-const SUPPORTED_MODULES = ["crypto-js"];
+const SUPPORTED_MODULES = ["crypto-js", "moment", "underscore", "tv4", "chai"];
 const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
 const SCRIPT_MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
 const SCRIPT_STACK_SIZE_BYTES = 512 * 1024;
