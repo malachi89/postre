@@ -2533,6 +2533,7 @@ className="inline-flex h-8 w-8 items-center justify-center rounded border border
           <div className={mainPanelMode === "environment" ? "flex min-h-0 flex-1 overflow-hidden" : "hidden"}>
             {data ? (
                <EnvironmentWorkspace
+                key={`env-${selectedEnvironmentId}`}
                 data={data}
                 selectedEnvironmentId={selectedEnvironmentId}
                 onSelectEnvironment={selectEnvironment}
@@ -4487,22 +4488,17 @@ function EnvironmentWorkspace({
   const [envRows, setEnvRows] = useState<VariableValue[]>(selectedEnv?.variables ?? []);
   const globalSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const envSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isInitialGlobals = useRef(true);
-  const isInitialEnv = useRef(true);
+  const syncedGlobalRows = useRef(data.globalVariables);
+  const syncedEnvRows = useRef(selectedEnv?.variables ?? []);
+  const flushGlobalSave = useRef<(() => void) | null>(null);
+  const flushEnvSave = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    const nextEnv = data.environments.find((environment) => environment.id === selectedEnvironmentId) ?? null;
-    setEnvRows(nextEnv?.variables ?? []);
-    isInitialEnv.current = true;
-  }, [data.environments, selectedEnvironmentId]);
-
-  useEffect(() => {
-    if (isInitialGlobals.current) {
-      isInitialGlobals.current = false;
-      return;
-    }
+    if (globalRows === syncedGlobalRows.current) return;
     if (globalSaveTimer.current) clearTimeout(globalSaveTimer.current);
-    globalSaveTimer.current = setTimeout(() => {
+    flushGlobalSave.current = () => {
+      globalSaveTimer.current = null;
+      syncedGlobalRows.current = globalRows;
       void api("/api/variables/bulk", {
         method: "PUT",
         body: JSON.stringify({
@@ -4510,21 +4506,21 @@ function EnvironmentWorkspace({
           variables: globalRows.map(stripVariableId)
         })
       }).then(() => onRefresh());
-    }, 600);
+    };
+    globalSaveTimer.current = setTimeout(() => flushGlobalSave.current?.(), 600);
     return () => {
       if (globalSaveTimer.current) clearTimeout(globalSaveTimer.current);
     };
   }, [globalRows]);
 
   useEffect(() => {
-    if (isInitialEnv.current) {
-      isInitialEnv.current = false;
-      return;
-    }
     if (!selectedEnv) return;
+    if (envRows === syncedEnvRows.current) return;
     if (envSaveTimer.current) clearTimeout(envSaveTimer.current);
     const envId = selectedEnv.id;
-    envSaveTimer.current = setTimeout(() => {
+    flushEnvSave.current = () => {
+      envSaveTimer.current = null;
+      syncedEnvRows.current = envRows;
       void api("/api/variables/bulk", {
         method: "PUT",
         body: JSON.stringify({
@@ -4533,11 +4529,25 @@ function EnvironmentWorkspace({
           variables: envRows.map(stripVariableId)
         })
       }).then(() => onRefresh());
-    }, 600);
+    };
+    envSaveTimer.current = setTimeout(() => flushEnvSave.current?.(), 600);
     return () => {
       if (envSaveTimer.current) clearTimeout(envSaveTimer.current);
     };
-  }, [envRows]);
+  }, [envRows, selectedEnv]);
+
+  useEffect(() => {
+    return () => {
+      if (globalSaveTimer.current) {
+        clearTimeout(globalSaveTimer.current);
+        flushGlobalSave.current?.();
+      }
+      if (envSaveTimer.current) {
+        clearTimeout(envSaveTimer.current);
+        flushEnvSave.current?.();
+      }
+    };
+  }, []);
 
   async function deleteEnvironment() {
     if (!selectedEnv) {
