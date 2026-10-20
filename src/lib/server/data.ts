@@ -25,18 +25,8 @@ import { normalizeScope } from "@/lib/variable-resolver";
 const DEFAULT_AUTH: AuthConfig = { type: "none" };
 
 export async function getAppData(): Promise<AppData> {
-  const [collections, environments, globalVariables, history] = await Promise.all([
-    prisma.collection.findMany({
-      orderBy: { createdAt: "asc" },
-      include: {
-        folders: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
-        requests: {
-          orderBy: { createdAt: "asc" },
-          include: { variables: { orderBy: { createdAt: "asc" } } }
-        },
-        variables: { orderBy: { createdAt: "asc" } }
-      }
-    }),
+  const [collections, environments, globalVariables, history, historyIds] = await Promise.all([
+    getCollectionsWithDetails(),
     prisma.environment.findMany({
       orderBy: { createdAt: "asc" },
       include: { variables: { orderBy: { createdAt: "asc" } } }
@@ -47,9 +37,13 @@ export async function getAppData(): Promise<AppData> {
     }),
     prisma.historyEntry.findMany({
       orderBy: { createdAt: "desc" },
-      take: 30
-    })
+      take: HISTORY_BOOT_ENTRIES
+    }),
+    prisma.historyEntry.findMany({ orderBy: { createdAt: "desc" }, take: HISTORY_MAX_ENTRIES, select: { id: true } })
   ]);
+
+  // Prune in the background: cap the history table so it can never grow unbounded.
+  void pruneHistory(historyIds.map((entry) => entry.id));
 
   return {
     collections: collections.map((collection) => serializeCollection(collection)),
@@ -58,6 +52,73 @@ export async function getAppData(): Promise<AppData> {
     globalVariables: globalVariables.map(serializeVariable),
     history: history.map(serializeHistoryEntry)
   };
+}
+
+export const HISTORY_MAX_ENTRIES = 500;
+export const HISTORY_BOOT_ENTRIES = 30;
+export const HISTORY_LIST_ENTRIES = 50;
+
+async function pruneHistory(keepIds: string[]) {
+  await prisma.historyEntry.deleteMany({
+    where: { id: { notIn: keepIds } }
+  });
+}
+
+/**
+ * Loads all collections with their folders/requests/variables, WITHOUT the
+ * rawPostmanJson blobs (which can be megabytes and are only needed for the
+ * export route's import records, not the serialized API shape).
+ */
+export async function getCollectionsWithDetails() {
+  return prisma.collection.findMany({
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      preRequestScript: true,
+      postRequestScript: true,
+      metadataJson: true,
+      createdAt: true,
+      updatedAt: true,
+      folders: {
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          collectionId: true,
+          parentId: true,
+          preRequestScript: true,
+          postRequestScript: true,
+          metadataJson: true,
+          createdAt: true
+        }
+      },
+      requests: {
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          collectionId: true,
+          folderId: true,
+          name: true,
+          method: true,
+          url: true,
+          headersJson: true,
+          queryParamsJson: true,
+          bodyMode: true,
+          bodyRawFormat: true,
+          bodyRaw: true,
+          preRequestScript: true,
+          postRequestScript: true,
+          authJson: true,
+          createdAt: true,
+          updatedAt: true,
+          variables: { orderBy: { createdAt: "asc" } }
+        }
+      },
+      variables: { orderBy: { createdAt: "asc" } }
+    }
+  });
 }
 
 export async function getVariablesForDraft(draft: RequestDraft, environmentId: string | null) {

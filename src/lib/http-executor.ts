@@ -2,6 +2,9 @@ import type { KeyValueRow, RequestDraft, SendErrorResult, SendResult } from "@/l
 import { getAutoHeaders } from "@/lib/auto-headers";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+// Responses larger than this are cut off (the connection is aborted) instead of
+// buffering the whole body in memory; history/run steps only keep 120 KB anyway.
+const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 
 function isBinaryContentType(contentType: string): boolean {
   const lower = contentType.toLowerCase();
@@ -43,13 +46,17 @@ export async function executeHttpRequest(
 ): Promise<SendResult | SendErrorResult> {
   const started = performance.now();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const safeTimeoutMs =
+    typeof timeoutMs === "number" && Number.isFinite(timeoutMs)
+      ? Math.min(Math.max(timeoutMs, 1_000), 300_000)
+      : DEFAULT_TIMEOUT_MS;
+  const timeout = setTimeout(() => controller.abort(), safeTimeoutMs);
 
   try {
     const targetUrl = buildTargetUrl(draft);
     const headers = buildHeaders(draft);
     applyCookieHeader(headers, cookieHeader);
-    const body = buildBody(draft, headers);
+    const body = buildBody(draft);
 
     const response = await fetch(targetUrl, {
       method: draft.method,
@@ -59,12 +66,13 @@ export async function executeHttpRequest(
       redirect: "follow"
     });
 
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const { bytes, truncated } = await readBodyWithCap(response, controller);
     const contentType = response.headers.get("content-type") ?? "";
-    const bodyText = isBinaryContentType(contentType)
+    const binary = isBinaryContentType(contentType);
+    const bodyText = binary
       ? `[Binary content: ${contentType || "unknown"}, ${formatByteLength(bytes.byteLength)}]`
-      : new TextDecoder().decode(bytes);
-    const bodyBase64 = isBinaryContentType(contentType) ? Buffer.from(bytes).toString("base64") : undefined;
+      : decodeBodyText(bytes, contentType);
+    const bodyBase64 = binary ? Buffer.from(bytes).toString("base64") : undefined;
     const durationMs = Math.round(performance.now() - started);
 
     return {
@@ -75,11 +83,15 @@ export async function executeHttpRequest(
       bodyBase64,
       contentType,
       durationMs,
-      sizeBytes: bytes.byteLength
+      sizeBytes: bytes.byteLength,
+      bodyTruncated: truncated
     };
   } catch (error) {
     const durationMs = Math.round(performance.now() - started);
-    const message = error instanceof Error ? error.message : "Network request failed";
+    let message = error instanceof Error ? error.message : "Network request failed";
+    if (error instanceof DOMException && error.name === "AbortError") {
+      message = `Request timed out after ${Math.round(safeTimeoutMs / 1000)}s`;
+    }
 
     return {
       error: message,
@@ -88,6 +100,67 @@ export async function executeHttpRequest(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function readBodyWithCap(
+  response: Response,
+  controller: AbortController
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!response.body) {
+    return { bytes: new Uint8Array(0), truncated: false };
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      chunks.push(value);
+      total += value.byteLength;
+      if (total >= MAX_RESPONSE_BYTES) {
+        truncated = true;
+        // Stop draining a huge download; abort cancels the connection.
+        controller.abort();
+        break;
+      }
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // already cancelled or closed
+    }
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return { bytes, truncated };
+}
+
+function decodeBodyText(bytes: Uint8Array, contentType: string): string {
+  const charset = /charset=([^;]+)/i.exec(contentType)?.[1]?.trim().replace(/^"|"$/g, "");
+  if (charset) {
+    try {
+      return new TextDecoder(charset).decode(bytes);
+    } catch {
+      // Unknown charset label — fall through to UTF-8.
+    }
+  }
+  return new TextDecoder("utf-8").decode(bytes);
 }
 
 function serializeResponseHeaders(headers: Headers): KeyValueRow[] {
@@ -123,7 +196,7 @@ export function buildTargetUrl(draft: RequestDraft): string {
 
   for (const row of draft.queryParams) {
     if (row.enabled && row.key.trim()) {
-      url.searchParams.set(row.key.trim(), row.value);
+      url.searchParams.append(row.key.trim(), row.value);
     }
   }
 
@@ -198,7 +271,7 @@ function applyCookieHeader(headers: Headers, cookieHeader: string) {
   }
 }
 
-function buildBody(draft: RequestDraft, _headers: Headers): BodyInit | undefined {
+function buildBody(draft: RequestDraft): BodyInit | undefined {
   if (draft.method === "GET" || draft.method === "HEAD" || draft.bodyMode === "none") {
     return undefined;
   }
@@ -212,18 +285,49 @@ function buildBody(draft: RequestDraft, _headers: Headers): BodyInit | undefined
   }
 
   if (draft.bodyMode === "binary") {
+    // The body field stores text for now; selecting a real file is not
+    // implemented end to end yet.
     return draft.bodyRaw;
+  }
+
+  if (draft.bodyMode === "formdata") {
+    // Imported Postman requests keep their form-data rows JSON-serialised in
+    // bodyRaw. Without a real editor, at least make those rows sendable.
+    const form = buildFormDataBody(draft.bodyRaw);
+    return form && form[Symbol.iterator]().next().done !== true ? form : undefined;
   }
 
   return undefined;
 }
 
-export function appendApiKeyQuery(url: string, apiKey: KeyValueRow | null): string {
-  if (!apiKey?.key) {
-    return url;
+function buildFormDataBody(bodyRaw: string): FormData | undefined {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(bodyRaw);
+  } catch {
+    return undefined;
   }
 
-  const target = new URL(url);
-  target.searchParams.set(apiKey.key, apiKey.value);
-  return target.toString();
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return undefined;
+  }
+
+  const form = new FormData();
+  for (const entry of rows.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object")) {
+    const key = typeof entry.key === "string" ? entry.key : "";
+    if (!key) {
+      continue;
+    }
+    // File uploads are not supported (no file content is stored), so file rows
+    // are skipped silently.
+    if (entry.type === "file") {
+      continue;
+    }
+    if (entry.disabled !== true) {
+      form.append(key, typeof entry.value === "string" ? entry.value : "");
+    }
+  }
+
+  return form;
 }
+

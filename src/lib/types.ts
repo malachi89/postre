@@ -169,6 +169,7 @@ export interface SendResult {
   contentType: string;
   durationMs: number;
   sizeBytes: number;
+  bodyTruncated?: boolean;
 }
 
 export interface SendErrorResult {
@@ -178,10 +179,17 @@ export interface SendErrorResult {
 
 export type ScriptPhase = "pre-request" | "post-request";
 
+export interface ScriptTestResult {
+  name: string;
+  passed: boolean;
+  error?: string | null;
+}
+
 export interface ScriptExecutionResult {
   phase: ScriptPhase;
   ok: boolean;
   logs: string[];
+  tests?: ScriptTestResult[];
   source?: string;
   error?: string;
 }

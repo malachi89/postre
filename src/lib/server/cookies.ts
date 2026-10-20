@@ -64,7 +64,13 @@ export async function clearCookies() {
 }
 
 export async function getCookieHeaderForUrl(url: string): Promise<string> {
-  const target = new URL(url);
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    return "";
+  }
+
   const now = new Date();
   await deleteExpiredCookies(now);
 
@@ -81,7 +87,11 @@ export async function getCookieHeaderForUrl(url: string): Promise<string> {
   });
 
   return matching
-    .sort((left, right) => right.path.length - left.path.length)
+    .sort(
+      (left, right) =>
+        right.path.length - left.path.length ||
+        left.createdAt.getTime() - right.createdAt.getTime()
+    )
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join("; ");
 }
@@ -156,10 +166,15 @@ export function parseSetCookie(header: string, target: URL): ParsedSetCookie | n
     const value = rawValue.join("=").trim();
 
     if (key === "domain" && value) {
-      cookie.domain = value.replace(/^\./, "").toLowerCase();
-      cookie.hostOnly = false;
-    } else if (key === "path" && value.startsWith("/")) {
-      cookie.path = value;
+      const domain = value.replace(/^\./, "").toLowerCase().replace(/^"|"$/g, "");
+      // Reject public-suffix style domains ("Domain=com") so a server can't
+      // mint cookies for every host under a TLD.
+      if (domain.split(".").length >= 2) {
+        cookie.domain = domain;
+        cookie.hostOnly = false;
+      }
+    } else if (key === "path" && value.replace(/^"|"$/g, "").startsWith("/")) {
+      cookie.path = value.replace(/^"|"$/g, "");
     } else if (key === "expires" && value) {
       const expires = new Date(value);
       if (!Number.isNaN(expires.getTime())) {

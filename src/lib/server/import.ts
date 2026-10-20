@@ -27,22 +27,27 @@ async function importCollection(payload: unknown) {
   const normalized = normalizePostmanCollection(payload);
   const preview = previewPostmanImport(payload);
 
-  const collection = await prisma.collection.create({
-    data: {
-      name: normalized.name,
-      preRequestScript: normalized.preRequestScript,
-      postRequestScript: normalized.postRequestScript,
-      rawPostmanJson: stringifyJson(payload),
-      metadataJson: stringifyJson(normalized.metadata),
-      variables: {
-        create: normalized.variables.map((variable) => variableToPrismaInput(variable))
+  // One transaction so a mid-import failure can't leave a half-imported collection.
+  const collection = await prisma.$transaction(async (tx) => {
+    const created = await tx.collection.create({
+      data: {
+        name: normalized.name,
+        preRequestScript: normalized.preRequestScript,
+        postRequestScript: normalized.postRequestScript,
+        rawPostmanJson: stringifyJson(payload),
+        metadataJson: stringifyJson(normalized.metadata),
+        variables: {
+          create: normalized.variables.map((variable) => variableToPrismaInput(variable))
+        }
       }
-    }
-  });
+    });
 
-  for (const [index, item] of normalized.items.entries()) {
-    await createImportedItem(collection.id, null, item, index);
-  }
+    for (const [index, item] of normalized.items.entries()) {
+      await createImportedItem(created.id, null, item, index, tx);
+    }
+
+    return created;
+  });
 
   await prisma.importRecord.create({
     data: {
@@ -100,10 +105,11 @@ async function createImportedItem(
   collectionId: string,
   parentId: string | null,
   item: NormalizedPostmanItem,
-  sortOrder: number
+  sortOrder: number,
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]
 ) {
   if (item.type === "folder") {
-    const folder = await prisma.folder.create({
+    const folder = await tx.folder.create({
       data: {
         collectionId,
         parentId,
@@ -116,13 +122,13 @@ async function createImportedItem(
     });
 
     for (const [index, child] of item.items.entries()) {
-      await createImportedItem(collectionId, folder.id, child, index);
+      await createImportedItem(collectionId, folder.id, child, index, tx);
     }
 
     return;
   }
 
-  await prisma.request.create({
+  await tx.request.create({
     data: {
       ...requestToPrismaInput({
         collectionId,

@@ -39,7 +39,7 @@ export function resolveTemplate(text: string, buckets: VariableBuckets): Resolut
       return `{{${key}}}`;
     }
 
-    return resolved.trim();
+    return resolved;
   });
 
   return {

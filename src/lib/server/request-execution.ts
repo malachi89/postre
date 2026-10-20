@@ -108,23 +108,29 @@ export async function executeRequest(input: ExecuteRequestInput): Promise<Execut
   const resolved = resolveRequestDraft(draft, variables);
 
   if (resolved.missingVariables.length > 0 && activeEnvironmentId) {
-    for (const key of resolved.missingVariables) {
-      const exists = await prisma.variable.findFirst({
-        where: { key, scope: "ENVIRONMENT", environmentId: activeEnvironmentId }
+    const existing = await prisma.variable.findMany({
+      where: {
+        key: { in: resolved.missingVariables },
+        scope: "ENVIRONMENT",
+        environmentId: activeEnvironmentId
+      },
+      select: { key: true }
+    });
+    const existingKeys = new Set(existing.map((variable) => variable.key));
+    const toCreate = resolved.missingVariables.filter((key) => !existingKeys.has(key));
+
+    if (toCreate.length > 0) {
+      await prisma.variable.createMany({
+        data: toCreate.map((key) => ({
+          key,
+          initialValue: "",
+          currentValue: "",
+          enabled: true,
+          scope: "ENVIRONMENT" as const,
+          isSecret: inferIsSecret(key),
+          environmentId: activeEnvironmentId
+        }))
       });
-      if (!exists) {
-        await prisma.variable.create({
-          data: {
-            key,
-            initialValue: "",
-            currentValue: "",
-            enabled: true,
-            scope: "ENVIRONMENT",
-            isSecret: inferIsSecret(key),
-            environmentId: activeEnvironmentId
-          }
-        });
-      }
     }
   }
 

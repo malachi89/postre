@@ -41,6 +41,7 @@ interface RequestRecord {
   bodyRaw: string | null;
   preRequestScript: string | null;
   postRequestScript: string | null;
+  metadataJson?: string | null;
   authJson: string;
   createdAt: Date;
 }
@@ -106,52 +107,67 @@ export async function createCollectionRun(input: CreateCollectionRunInput): Prom
   let stopped = false;
   let sequence = 0;
 
-  for (let iteration = 1; iteration <= iterations; iteration += 1) {
-    for (const request of requests) {
-      sequence += 1;
-      const outcome = await executeRequest({
-        draft: request.draft,
-        activeEnvironmentId: input.activeEnvironmentId,
-        preScripts: request.preScripts,
-        postScripts: request.postScripts,
-        persistDraft: false,
-        failOnPostScriptError: true,
-        persistHistoryOnRuntimeError: true
-      });
+  try {
+    for (let iteration = 1; iteration <= iterations; iteration += 1) {
+      for (const request of requests) {
+        sequence += 1;
+        const outcome = await executeRequest({
+          draft: request.draft,
+          activeEnvironmentId: input.activeEnvironmentId,
+          preScripts: request.preScripts,
+          postScripts: request.postScripts,
+          persistDraft: false,
+          failOnPostScriptError: true,
+          persistHistoryOnRuntimeError: true
+        });
 
-      completedSteps += 1;
-      if (outcome.ok) {
-        successCount += 1;
-      } else {
-        errorCount += 1;
+        completedSteps += 1;
+        if (outcome.ok) {
+          successCount += 1;
+        } else {
+          errorCount += 1;
+        }
+
+        await prisma.$transaction([
+          prisma.collectionRunStep.create({
+            data: buildCollectionRunStepData(run.id, request, iteration, sequence, outcome)
+          }),
+          prisma.collectionRun.update({
+            where: { id: run.id },
+            data: {
+              completedSteps,
+              successCount,
+              errorCount
+            }
+          })
+        ]);
+
+        if (!outcome.ok && stopOnError) {
+          stopped = true;
+          break;
+        }
+
+        if (delayMs > 0 && !(iteration === iterations && request.id === requests.at(-1)?.id)) {
+          await sleep(delayMs);
+        }
       }
 
-      await prisma.collectionRunStep.create({
-        data: buildCollectionRunStepData(run.id, request, iteration, sequence, outcome)
-      });
-
-      await prisma.collectionRun.update({
-        where: { id: run.id },
-        data: {
-          completedSteps,
-          successCount,
-          errorCount
-        }
-      });
-
-      if (!outcome.ok && stopOnError) {
-        stopped = true;
+      if (stopped) {
         break;
       }
-
-      if (delayMs > 0 && !(iteration === iterations && request.id === requests.at(-1)?.id)) {
-        await sleep(delayMs);
-      }
     }
-
-    if (stopped) {
-      break;
-    }
+  } catch (error) {
+    // Never leave the run stuck as "running" (e.g. process restart, Prisma error).
+    await prisma.collectionRun
+      .update({
+        where: { id: run.id },
+        data: {
+          status: "completed_with_errors",
+          finishedAt: new Date()
+        }
+      })
+      .catch(() => undefined);
+    throw error;
   }
 
   await prisma.collectionRun.update({
@@ -236,7 +252,13 @@ export function flattenRunRequests(
 
   const result: RunRequestPlan[] = [];
 
+  // A corrupted parentId chain could create a cycle; guard so we never recurse forever.
+  const visitedFolders = new Set<string>();
   const visitFolder = (folder: FolderRecord, ancestors: FolderRecord[]) => {
+    if (visitedFolders.has(folder.id)) {
+      return;
+    }
+    visitedFolders.add(folder.id);
     const lineage = [...ancestors, folder];
     for (const child of childrenByParent.get(folder.id) ?? []) {
       visitFolder(child, lineage);
@@ -359,10 +381,11 @@ function toRunRequestPlan(
   const scripts = resolveEffectiveScriptSources({
     collection: collectionScripts,
     folders: folderScripts,
+    // getScriptFields falls back to metadataJson scripts (imported Postman requests
+    // whose scripts were never lifted onto the columns).
     request: {
       name: request.name,
-      preRequestScript: requestDraft.preRequestScript,
-      postRequestScript: requestDraft.postRequestScript
+      ...getScriptFields(request)
     }
   });
 
@@ -458,6 +481,9 @@ function normalizeRawFormat(format: string | null | undefined): RawFormat {
 }
 
 function clamp(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
   return Math.min(max, Math.max(min, value));
 }
 

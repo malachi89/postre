@@ -219,8 +219,10 @@ function normalizeItem(item: unknown, warnings: string[]): NormalizedPostmanItem
 
   const name = stringValue(record.name, "Untitled");
   const children = asArray(record.item);
+  const isFolder = Array.isArray(record.item);
 
-  if (children.length > 0) {
+  // An empty folder is still a folder (`"item": []`); only a folder key confirms it.
+  if (isFolder) {
     const scripts = extractPostmanScripts(asArray(record.event));
 
     return {
@@ -383,9 +385,23 @@ function normalizeUrl(value: unknown): { url: string; queryParams: KeyValueRow[]
   });
 
   if (raw) {
+    const { url: rawBase, queryParams: rawParams } = splitRawUrlQuery(raw);
+
+    // The declared `query` array is authoritative (it carries enabled/disabled state);
+    // merge in any params that only exist inside the raw string.
+    const seen = new Set(
+      queryParams.map((param) => `${escapeToken(param.key)}=${escapeToken(param.value)}`)
+    );
+    const merged = [
+      ...queryParams,
+      ...rawParams.filter(
+        (param) => !seen.has(`${escapeToken(param.key)}=${escapeToken(param.value)}`)
+      )
+    ];
+
     return {
-      url: raw,
-      queryParams
+      url: rawBase,
+      queryParams: merged
     };
   }
 
@@ -450,16 +466,18 @@ function normalizeBody(
   }
 
   if (mode === "urlencoded") {
-    const form = new URLSearchParams();
+    const parts: string[] = [];
     for (const entry of asArray(body.urlencoded)) {
       const record = asRecord(entry) ?? {};
       if (record.disabled !== true) {
-        form.append(stringValue(record.key), stringValue(record.value));
+        // Encode key/values but keep `{{variable}}` tokens literal so the
+        // variable resolver can still substitute them at send time.
+        parts.push(`${encodeFormComponent(stringValue(record.key))}=${encodeFormComponent(stringValue(record.value))}`);
       }
     }
     return {
       bodyMode: "form_urlencoded" as const,
-      bodyRaw: form.toString()
+      bodyRaw: parts.join("&")
     };
   }
 
@@ -529,12 +547,21 @@ function normalizeAuth(value: unknown): AuthConfig {
 }
 
 function readAuthValue(value: unknown, key: string): string {
+  // Legacy shape: `bearer: { token }`, `basic: { username, password }`, etc.
+  const record = asRecord(value);
+  if (record) {
+    const legacy = stringValue(record[key]);
+    if (legacy) {
+      return legacy;
+    }
+  }
+
   const list = asArray(value);
 
   for (const item of list) {
-    const record = asRecord(item);
-    if (record && stringValue(record.key) === key) {
-      return stringValue(record.value);
+    const itemRecord = asRecord(item);
+    if (itemRecord && stringValue(itemRecord.key) === key) {
+      return stringValue(itemRecord.value);
     }
   }
 
@@ -617,6 +644,52 @@ function joinPostmanPath(value: unknown, delimiter: string): string {
   }
 
   return stringValue(value);
+}
+
+function splitRawUrlQuery(raw: string): { url: string; queryParams: KeyValueRow[] } {
+  const hashIndex = raw.indexOf("#");
+  const baseAndSearch = hashIndex === -1 ? raw : raw.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? "" : raw.slice(hashIndex);
+  const queryIndex = baseAndSearch.indexOf("?");
+
+  if (queryIndex === -1) {
+    return { url: raw, queryParams: [] };
+  }
+
+  const base = baseAndSearch.slice(0, queryIndex);
+  const query = baseAndSearch.slice(queryIndex + 1);
+  const queryParams = query
+    .split("&")
+    .filter(Boolean)
+    .map((part) => {
+      const equalsIndex = part.indexOf("=");
+      const key = equalsIndex === -1 ? part : part.slice(0, equalsIndex);
+      const value = equalsIndex === -1 ? "" : part.slice(equalsIndex + 1);
+      return {
+        key: decodeUrlComponent(key),
+        value: decodeUrlComponent(value),
+        enabled: true,
+        isSecret: inferIsSecret(key)
+      };
+    });
+
+  return { url: `${base}${hash}`, queryParams };
+}
+
+function escapeToken(value: string): string {
+  return value.replace(/&/g, "%26").replace(/\?/g, "%3F").replace(/=/g, "%3D");
+}
+
+function encodeFormComponent(value: string): string {
+  return encodeURIComponent(value).replace(/%7B%7B/g, "{{").replace(/%7D%7D/g, "}}");
+}
+
+function decodeUrlComponent(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    return value;
+  }
 }
 
 function looksLikeJson(value: string): boolean {

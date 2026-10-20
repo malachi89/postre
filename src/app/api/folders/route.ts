@@ -16,6 +16,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "collectionId is required" }, { status: 400 });
   }
 
+  if (body.parentId) {
+    const parent = await prisma.folder.findFirst({
+      where: { id: body.parentId, collectionId: body.collectionId },
+      select: { id: true }
+    });
+    if (!parent) {
+      return NextResponse.json({ error: "parentId must be a folder of the same collection" }, { status: 400 });
+    }
+  }
+
   const folder = await prisma.folder.create({
     data: {
       name: body.name?.trim() || "New Folder",

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";

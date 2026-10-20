@@ -24,7 +24,21 @@ const IGNORED_VALUE_FLAGS = new Set([
   "--cert",
   "--key",
   "--cookie",
-  "-b"
+  "-b",
+  "-A",
+  "--user-agent",
+  "-e",
+  "--referer",
+  "-m",
+  "-o",
+  "--output",
+  "-D",
+  "--dump-header",
+  "-K",
+  "--config",
+  "--limit-rate",
+  "-T",
+  "--upload-file"
 ]);
 
 const DATA_FLAGS = new Set(["-d", "--data", "--data-raw", "--data-binary", "--data-ascii", "--data-urlencode"]);
@@ -50,7 +64,7 @@ export function requestDraftToCurl(draft: RequestDraft): string {
     lines.push(`  --user ${quoteShell(`${draft.auth.username ?? ""}:${draft.auth.password ?? ""}`)}`);
   }
 
-  if (draft.bodyRaw && (draft.bodyMode === "raw" || draft.bodyMode === "binary")) {
+  if (draft.bodyRaw && (draft.bodyMode === "raw" || draft.bodyMode === "binary" || draft.bodyMode === "form_urlencoded")) {
     lines.push(`  --data-raw ${quoteShell(draft.bodyRaw)}`);
   }
 
@@ -127,7 +141,13 @@ export function parseCurlToRequestDraft(curl: string, currentDraft: RequestDraft
     }
 
     if (DATA_FLAGS.has(token)) {
-      dataParts.push(readValue(tokens, index, token));
+      const value = readValue(tokens, index, token);
+      if (value.startsWith("@")) {
+        throw new CurlParseError(
+          `File bodies (--data ${value}) are not supported. Paste the file content instead.`
+        );
+      }
+      dataParts.push(value);
       index += 2;
       continue;
     }
@@ -171,7 +191,9 @@ export function parseCurlToRequestDraft(curl: string, currentDraft: RequestDraft
     throw new CurlParseError("Could not find a URL in the cURL command.");
   }
 
-  const bodyRaw = dataParts.join("&");
+  // Per curl semantics, multiple -d/--data parts concatenate WITHOUT a separator:
+  // `curl -d name=daniel -d power=lotso` sends `name=danielpower=lotso`.
+  const bodyRaw = dataParts.join("");
   const inferred = inferBodyMode(bodyRaw);
   const parsedUrl = extractQueryParams(url);
 
@@ -347,13 +369,13 @@ function quoteShell(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function encodeQueryComponent(value: string): string {
+export function encodeQueryComponent(value: string): string {
   return encodeURIComponent(value)
     .replace(/%7B%7B/g, "{{")
     .replace(/%7D%7D/g, "}}");
 }
 
-function decodeQueryComponent(value: string): string {
+export function decodeQueryComponent(value: string): string {
   try {
     return decodeURIComponent(value.replace(/\+/g, " "));
   } catch {
@@ -422,11 +444,30 @@ function normalizeMethod(value: string): HttpMethod {
 function readValue(tokens: string[], index: number, flag: string): string {
   const value = tokens[index + 1];
 
-  if (value === undefined || value.startsWith("-")) {
+  if (
+    value === undefined ||
+    (value.startsWith("-") && isKnownCurlFlag(value))
+  ) {
     throw new CurlParseError(`Missing value for ${flag}.`);
   }
 
   return value;
+}
+
+function isKnownCurlFlag(token: string): boolean {
+  return (
+    NO_VALUE_FLAGS.has(token) ||
+    IGNORED_VALUE_FLAGS.has(token) ||
+    DATA_FLAGS.has(token) ||
+    FORM_FLAGS.has(token) ||
+    token === "-X" ||
+    token === "--request" ||
+    token === "--url" ||
+    token === "-H" ||
+    token === "--header" ||
+    token === "-u" ||
+    token === "--user"
+  );
 }
 
 function splitOnce(value: string, delimiter: string): [string, string?] {

@@ -44,7 +44,6 @@ import type {
   ApiRequest,
   AppData,
   AuthConfig,
-  BodyMode,
   RawFormat,
   HttpMethod,
   ImportPreview,
@@ -55,7 +54,7 @@ import type {
   VariableValue
 } from "@/lib/types";
 import { HTTP_METHODS } from "@/lib/types";
-import { CurlParseError, parseCurlToRequestDraft, requestDraftToCurl } from "@/lib/curl";
+import { CurlParseError, decodeQueryComponent, encodeQueryComponent, parseCurlToRequestDraft, requestDraftToCurl } from "@/lib/curl";
 import { inferIsSecret, maskSecret } from "@/lib/secret-utils";
 import {
   applyVariableAutocomplete,
@@ -355,7 +354,7 @@ function renderTokenizedHtml(value: string, variableLookup: VariableLookup) {
       : "border-amber-200 bg-amber-50 text-amber-800";
 
     parts.push(
-      `<span class="mx-px inline-flex rounded-full border px-2 py-0.5 align-baseline text-[0.95em] leading-5 ${colorClass}" title="${escapeHtml(hasValue ? resolvedVariable.value : `Variable not found: ${variableName}`)}">${escapeHtml(tokenText)}</span>`
+      `<span class="mx-px inline-flex rounded-full border px-2 py-0.5 align-baseline text-[0.95em] leading-5 ${colorClass}" title="${escapeHtml(hasValue ? (resolvedVariable.isSecret ? maskSecret(resolvedVariable.value) : resolvedVariable.value) : `Variable not found: ${variableName}`)}">${escapeHtml(tokenText)}</span>`
     );
 
     lastIndex = match.index + tokenText.length;
@@ -388,7 +387,7 @@ function renderVariableTokenHtml(text: string, variableLookup: VariableLookup) {
       : "border-amber-200 bg-amber-50 text-amber-800";
 
     parts.push(
-      `<span class="mx-px inline-flex rounded-full border px-2 py-0.5 align-baseline text-[0.95em] leading-5 ${colorClass}" title="${escapeHtml(hasValue ? resolvedVariable.value : `Variable not found: ${variableName}`)}">${escapeHtml(tokenText)}</span>`
+      `<span class="mx-px inline-flex rounded-full border px-2 py-0.5 align-baseline text-[0.95em] leading-5 ${colorClass}" title="${escapeHtml(hasValue ? (resolvedVariable.isSecret ? maskSecret(resolvedVariable.value) : resolvedVariable.value) : `Variable not found: ${variableName}`)}">${escapeHtml(tokenText)}</span>`
     );
     lastIndex = match.index + tokenText.length;
   }
@@ -922,13 +921,22 @@ export function PostreApp() {
   const requestTabsRef = useRef<OpenRequestTab[]>(requestTabs);
   const activeRequestTabIdRef = useRef<string | null>(activeRequestTabId);
   const activeRequestControllerRef = useRef<AbortController | null>(null);
+  const activeRequestControllersByTabRef = useRef<Map<string, AbortController>>(new Map());
+  const sendSequenceByTabRef = useRef<Map<string, number>>(new Map());
   const didInitializeRequestTabsRef = useRef(false);
   requestTabsRef.current = requestTabs;
   activeRequestTabIdRef.current = activeRequestTabId;
 
+  const refreshSeqRef = useRef(0);
   const refresh = useCallback(async (options: { reconcileTabs?: boolean } = {}) => {
     const reconcileTabs = options.reconcileTabs ?? true;
+    const seq = ++refreshSeqRef.current;
     const nextData = await api<AppData>("/api/data");
+    if (seq !== refreshSeqRef.current) {
+      // A newer refresh already won; this stale snapshot could resurrect
+      // deleted collections in the tree, so drop it.
+      return;
+    }
     setData(nextData);
 
     setSelectedCollectionId((current) => current ?? nextData.collections[0]?.id ?? null);
@@ -1243,7 +1251,9 @@ export function PostreApp() {
         setNotice("Request saved.");
       }
 
-      await refresh({ reconcileTabs: false });
+      // In-place patch: rehome the saved request in the tree instead of a full
+      // refresh, which would race with any concurrent data changes.
+      setData((current) => (current ? { ...current, collections: rehomeSavedRequest(current.collections, saved, tab.draft.folderId) } : current));
       return nextDraft;
     } catch (error) {
       updateRequestTab(tabId, (current) => ({ ...current, saving: false }));
@@ -1557,19 +1567,27 @@ export function PostreApp() {
       message: `Delete environment "${env.name}"?`,
       onConfirm: () => {
         setConfirmDialog(null);
-        void (async () => {
-          await api(`/api/environments/${environmentId}`, { method: "DELETE" });
-          if (next) {
-            selectEnvironment(next.id);
-          } else {
-            setSelectedEnvironmentId(null);
-            setMainPanelMode("request");
-            setShowEnvironmentsPanel(false);
-          }
-          await refresh();
-        })();
+        void deleteEnvironmentConfirmed(environmentId, next?.id ?? null);
       }
     });
+  }
+
+  async function deleteEnvironmentConfirmed(environmentId: string, nextEnvironmentId: string | null) {
+    // Deleting the active environment leaves the server with no active
+    // environment, so persist the fallback before the app data refreshes.
+    await api("/api/environments/active", {
+      method: "PATCH",
+      body: JSON.stringify({ environmentId: nextEnvironmentId })
+    }).catch(() => undefined);
+    await api(`/api/environments/${environmentId}`, { method: "DELETE" });
+    if (nextEnvironmentId) {
+      selectEnvironment(nextEnvironmentId);
+    } else {
+      setSelectedEnvironmentId(null);
+      setMainPanelMode("request");
+      setShowEnvironmentsPanel(false);
+    }
+    await refresh();
   }
 
   async function renameCollection(collection: ApiCollection) {
@@ -1722,6 +1740,26 @@ export function PostreApp() {
       })
     });
 
+    // POST /api/requests doesn't create request variables; copy them so a
+    // duplicate stays faithful to the original.
+    if (request.variables.length > 0) {
+      await api("/api/variables/bulk", {
+        method: "PUT",
+        body: JSON.stringify({
+          scope: "REQUEST",
+          requestId: newRequest.id,
+          variables: request.variables.map((variable) => ({
+            key: variable.key,
+            initialValue: variable.initialValue,
+            currentValue: variable.currentValue,
+            enabled: variable.enabled,
+            scope: "REQUEST",
+            isSecret: variable.isSecret
+          }))
+        })
+      });
+    }
+
     focusRequestView();
     const tab = createOpenRequestTab(newRequest);
     setRequestTabs((current) => [...current, tab]);
@@ -1822,11 +1860,11 @@ export function PostreApp() {
     });
   }
 
-  async function sendRequest() {
+  async function sendRequest(): Promise<SendResponseState | null> {
     const tabId = activeRequestTabIdRef.current;
     const tab = requestTabsRef.current.find((item) => item.tabId === tabId);
     if (!tab) {
-      return;
+      return null;
     }
 
     let sendUrl = tab.draft.url.trim();
@@ -1838,14 +1876,22 @@ export function PostreApp() {
       }));
     }
 
+    // Each send gets a monotonically increasing sequence per tab, so a slow
+    // older send can never overwrite the response of a newer one.
+    const seq = (sendSequenceByTabRef.current.get(tab.tabId) ?? 0) + 1;
+    sendSequenceByTabRef.current.set(tab.tabId, seq);
+
     const controller = new AbortController();
     activeRequestControllerRef.current = controller;
+    activeRequestControllersByTabRef.current.get(tab.tabId)?.abort();
+    activeRequestControllersByTabRef.current.set(tab.tabId, controller);
+    let result: SendResponseState | null = null;
 
     updateRequestTab(tab.tabId, (current) => ({ ...current, busy: true, response: null }));
     try {
       const savedDraft = await saveRequestTab(tab.tabId, false);
       const sendDraft = savedDraft ?? tab.draft;
-      const result = await api<SendResponseState>("/api/send", {
+      result = await api<SendResponseState>("/api/send", {
         method: "POST",
         body: JSON.stringify({
           draft: { ...sendDraft, url: sendUrl || sendDraft.url },
@@ -1854,26 +1900,41 @@ export function PostreApp() {
         allowError: true,
         signal: controller.signal
       });
-      updateRequestTab(tab.tabId, (current) => ({ ...current, response: result }));
-      await refresh({ reconcileTabs: false });
+      if (sendSequenceByTabRef.current.get(tab.tabId) === seq) {
+        updateRequestTab(tab.tabId, (current) => ({ ...current, response: result }));
+        await refresh({ reconcileTabs: false });
+      }
     } catch (error) {
+      const isLatest = sendSequenceByTabRef.current.get(tab.tabId) === seq;
       if (error instanceof DOMException && error.name === "AbortError") {
-        updateRequestTab(tab.tabId, (current) => ({
-          ...current,
-          response: { error: "Request cancelled" }
-        }));
+        if (isLatest) {
+          updateRequestTab(tab.tabId, (current) => ({
+            ...current,
+            response: { error: "Request cancelled" }
+          }));
+        }
       } else {
         const errorMessage = error instanceof Error ? error.message : "Request failed";
         const friendlyMessage = categorizeError(errorMessage);
-        updateRequestTab(tab.tabId, (current) => ({
-          ...current,
-          response: { error: friendlyMessage }
-        }));
+        if (isLatest) {
+          updateRequestTab(tab.tabId, (current) => ({
+            ...current,
+            response: { error: friendlyMessage }
+          }));
+        }
       }
+      result = null;
     } finally {
       updateRequestTab(tab.tabId, (current) => ({ ...current, busy: false }));
-      activeRequestControllerRef.current = null;
+      if (activeRequestControllersByTabRef.current.get(tab.tabId) === controller) {
+        activeRequestControllersByTabRef.current.delete(tab.tabId);
+      }
+      if (activeRequestControllerRef.current === controller) {
+        activeRequestControllerRef.current = null;
+      }
     }
+
+    return result;
   }
 
   function cancelRequest() {
@@ -1881,9 +1942,7 @@ export function PostreApp() {
   }
 
   async function sendAndDownloadRequest() {
-    await sendRequest();
-    const tab = requestTabsRef.current.find((t) => t.tabId === activeRequestTabIdRef.current);
-    const result = tab?.response;
+    const result = await sendRequest();
     if (!result || "error" in result || !result.body) return;
 
     try {
@@ -2624,17 +2683,7 @@ className="inline-flex h-8 w-8 items-center justify-center rounded border border
               message: `Delete environment "${env.name}"?`,
               onConfirm: () => {
                 setConfirmDialog(null);
-                void (async () => {
-                  await api(`/api/environments/${environmentId}`, { method: "DELETE" });
-                  if (next) {
-                    selectEnvironment(next.id);
-                  } else {
-                    setSelectedEnvironmentId(null);
-                    setMainPanelMode("request");
-                    setShowEnvironmentsPanel(false);
-                  }
-                  await refresh();
-                })();
+                void deleteEnvironmentConfirmed(environmentId, next?.id ?? null);
               }
             });
           }}
@@ -3112,12 +3161,15 @@ function RequestEditor({
     [draft, variableLookup]
   );
 
-  // Build the display URL from base URL + enabled query params
+  // Build the display URL from base URL + enabled query params.
+  // Values are encoded the same way the cURL generator encodes them, so the URL
+  // bar, the params table, and the generated cURL always agree.
   const displayUrl = useMemo(() => {
-    const enabledParams = draft.queryParams.filter((r) => r.enabled && r.key.trim());
+    const enabledParams = draft.queryParams.filter((r) => r.enabled && (r.key.trim() || r.value));
     if (enabledParams.length === 0) return draft.url;
     const qs = enabledParams
-      .map((r) => (r.value ? `${r.key.trim()}=${r.value}` : r.key.trim()))
+      // A key with no value renders as "key" only (e.g. "?debug")
+      .map((r) => (r.value ? `${encodeQueryComponent(r.key.trim())}=${encodeQueryComponent(r.value)}` : encodeQueryComponent(r.key.trim())))
       .join("&");
     // If url already ends with ?, just append; otherwise add ?
     if (draft.url.endsWith("?")) return `${draft.url}${qs}`;
@@ -3143,8 +3195,12 @@ function RequestEditor({
         .filter((part) => part.length > 0)
         .map((part) => {
           const eqIndex = part.indexOf("=");
-          if (eqIndex === -1) return { key: part, value: "", enabled: true };
-          return { key: part.slice(0, eqIndex), value: part.slice(eqIndex + 1), enabled: true };
+          if (eqIndex === -1) return { key: decodeQueryComponent(part), value: "", enabled: true };
+          return {
+            key: decodeQueryComponent(part.slice(0, eqIndex)),
+            value: decodeQueryComponent(part.slice(eqIndex + 1)),
+            enabled: true
+          };
         });
       // Preserve disabled params from the table
       const disabledParams = draft.queryParams.filter((r) => !r.enabled);
@@ -5115,35 +5171,62 @@ function ScriptResultsPanel({ results }: { results: ScriptExecutionResult[] }) {
 
   return (
     <div className="grid gap-2">
-      {results.map((result, index) => (
-        <details
-          key={`${result.phase}-${result.source ?? "request"}-${index}`}
-          className={`group rounded border p-2 ${
-            result.ok ? "border-teal-200 bg-teal-50" : "border-rose-200 bg-rose-50"
-          }`}
-          open={!result.ok}
-        >
-          <summary
-            className={`flex cursor-pointer list-none items-center gap-2 text-sm font-semibold ${
-              result.ok ? "text-teal-800" : "text-rose-800"
+      {results.map((result, index) => {
+        const tests = result.tests ?? [];
+        const failedTests = tests.filter((test) => !test.passed).length;
+
+        return (
+          <details
+            key={`${result.phase}-${result.source ?? "request"}-${index}`}
+            className={`group rounded border p-2 ${
+              result.ok && !failedTests ? "border-teal-200 bg-teal-50" : "border-rose-200 bg-rose-50"
             }`}
+            open={!result.ok || failedTests > 0}
           >
-            <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
-            <span>{result.source ? `${result.source}` : result.phase}</span>
-            <span>{result.ok ? "ok" : "failed"}</span>
-          </summary>
-          <div className="mt-2 grid gap-2">
-            {result.error ? <div className="text-sm font-medium text-rose-700">{result.error}</div> : null}
-            {result.logs.length ? (
-              <pre className="max-h-48 overflow-auto rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
-                {result.logs.join("\n")}
-              </pre>
-            ) : (
-              <div className="text-xs text-slate-500">No logs.</div>
-            )}
-          </div>
-        </details>
-      ))}
+            <summary
+              className={`flex cursor-pointer list-none items-center gap-2 text-sm font-semibold ${
+                result.ok && !failedTests ? "text-teal-800" : "text-rose-800"
+              }`}
+            >
+              <ChevronRight className="shrink-0 transition-transform group-open:rotate-90" size={16} />
+              <span>{result.source ? `${result.source}` : result.phase}</span>
+              <span>{result.ok ? "ok" : "failed"}</span>
+              {tests.length ? (
+                <span>
+                  {failedTests ? `${failedTests}/${tests.length} tests failed` : `${tests.length} tests passed`}
+                </span>
+              ) : null}
+            </summary>
+            <div className="mt-2 grid gap-2">
+              {result.error ? <div className="text-sm font-medium text-rose-700">{result.error}</div> : null}
+              {tests.length ? (
+                <div className="grid gap-1">
+                  {tests.map((test, testIndex) => (
+                    <div
+                      key={`${test.name}-${testIndex}`}
+                      className={`rounded border px-2 py-1 text-xs ${
+                        test.passed ? "border-teal-200 bg-teal-50 text-teal-800" : "border-rose-200 bg-rose-50 text-rose-800"
+                      }`}
+                    >
+                      <div className="font-semibold">
+                        {test.passed ? "PASS" : "FAIL"} · {test.name}
+                      </div>
+                      {test.error ? <div className="font-mono break-all">{test.error}</div> : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {result.logs.length ? (
+                <pre className="max-h-48 overflow-auto rounded bg-slate-950 p-2 font-mono text-xs text-slate-50">
+                  {result.logs.join("\n")}
+                </pre>
+              ) : (
+                <div className="text-xs text-slate-500">No logs.</div>
+              )}
+            </div>
+          </details>
+        );
+      })}
     </div>
   );
 }
@@ -5231,6 +5314,53 @@ function ResponseHeadersModal({
   );
 }
 
+// Shared dialog scaffolding: Escape-to-dismiss, overlay click-to-dismiss and
+// keyboard focus for assistive tech (without stealing focus from children
+// that manage their own focus, like PromptDialog's input).
+function DialogShell({
+  children,
+  onDismiss,
+  className
+}: {
+  children: React.ReactNode;
+  onDismiss: () => void;
+  className: string;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onDismiss();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onDismiss]);
+
+  useEffect(() => {
+    if (!containerRef.current?.contains(document.activeElement)) {
+      containerRef.current?.focus();
+    }
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onDismiss();
+        }
+      }}
+    >
+      <div ref={containerRef} tabIndex={-1} role="dialog" aria-modal="true" className={className}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function Modal({
   title,
   children,
@@ -5241,17 +5371,15 @@ function Modal({
   onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
-      <div className="w-full max-w-5xl rounded bg-white shadow-2xl">
-        <div className="flex h-10 items-center justify-between border-b border-slate-200 px-4">
-          <h2 className="text-sm font-semibold">{title}</h2>
-          <button className="rounded px-2 py-1 text-sm text-slate-500 hover:bg-slate-100" onClick={onClose}>
-            Close
-          </button>
-        </div>
-        <div className="p-2">{children}</div>
+    <DialogShell onDismiss={onClose} className="w-full max-w-5xl rounded bg-white shadow-2xl outline-none">
+      <div className="flex h-10 items-center justify-between border-b border-slate-200 px-4">
+        <h2 className="text-sm font-semibold">{title}</h2>
+        <button className="rounded px-2 py-1 text-sm text-slate-500 hover:bg-slate-100" onClick={onClose}>
+          Close
+        </button>
       </div>
-    </div>
+      <div className="p-2">{children}</div>
+    </DialogShell>
   );
 }
 
@@ -5419,29 +5547,27 @@ function ConfirmDialog({
   onCancel: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
-      <div className="w-full max-w-sm rounded bg-white shadow-2xl">
-        <div className="p-4">
-          <p className="text-sm text-slate-700">{message}</p>
-          <div className="mt-6 flex justify-end gap-2">
-            <button
-              type="button"
-              className="h-8 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
-              onClick={onCancel}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="h-8 rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700"
-              onClick={onConfirm}
-            >
-              Delete
-            </button>
-          </div>
+    <DialogShell onDismiss={onCancel} className="w-full max-w-sm rounded bg-white shadow-2xl outline-none">
+      <div className="p-4">
+        <p className="text-sm text-slate-700">{message}</p>
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            type="button"
+            className="h-8 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="h-8 rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700"
+            onClick={onConfirm}
+          >
+            Delete
+          </button>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }
 
@@ -5465,44 +5591,43 @@ function PromptDialog({
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
-      <div className="w-full max-w-sm rounded bg-white shadow-2xl">
-        <div className="p-4">
-          <p className="mb-2 text-sm text-slate-700">{message}</p>
-          <input
-            ref={inputRef}
-            type="text"
-            className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && value) {
-                onConfirm(value);
-              } else if (event.key === "Escape") {
-                onCancel();
-              }
-            }}
-          />
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              className="h-8 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
-              onClick={onCancel}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="h-8 rounded bg-teal-600 px-4 text-sm text-white hover:bg-teal-700 disabled:opacity-50"
-              onClick={() => onConfirm(value)}
-              disabled={!value}
-            >
-              Confirm
-            </button>
-          </div>
+    <DialogShell onDismiss={onCancel} className="w-full max-w-sm rounded bg-white shadow-2xl outline-none">
+      <div className="p-4">
+        <p className="mb-2 text-sm text-slate-700">{message}</p>
+        <input
+          ref={inputRef}
+          type="text"
+          className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && value) {
+              onConfirm(value);
+            } else if (event.key === "Escape") {
+              event.stopPropagation();
+              onCancel();
+            }
+          }}
+        />
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            className="h-8 rounded border border-slate-300 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="h-8 rounded bg-teal-600 px-4 text-sm text-white hover:bg-teal-700 disabled:opacity-50"
+            onClick={() => onConfirm(value)}
+            disabled={!value}
+          >
+            Confirm
+          </button>
         </div>
       </div>
-    </div>
+    </DialogShell>
   );
 }
 
@@ -5770,6 +5895,64 @@ function findRequestInFolders(folders: ApiFolder[], requestId: string): ApiReque
   }
 
   return null;
+}
+
+// After an autosave PATCH, replace the request wherever it currently lives
+// (collection root or nested folder) and move it to its declared folder.
+function rehomeSavedRequest(collections: ApiCollection[], saved: ApiRequest, folderId: string | null | undefined): ApiCollection[] {
+  const withoutSaved = removeRequestFromCollections(collections, saved.id);
+
+  return withoutSaved.map((collection) => {
+    if (collection.id !== saved.collectionId) {
+      return collection;
+    }
+
+    if (folderId) {
+      let inserted = false;
+      const folders = insertRequestIntoFolders(collection.folders, folderId, saved, () => {
+        inserted = true;
+      });
+      if (inserted) {
+        return { ...collection, folders };
+      }
+      // Folder vanished since the move started; fall back to the collection root.
+      return { ...collection, requests: [...collection.requests, saved] };
+    }
+
+    return { ...collection, requests: [...collection.requests, saved] };
+  });
+}
+
+function removeRequestFromCollections(collections: ApiCollection[], requestId: string): ApiCollection[] {
+  return collections.map((collection) => {
+    const requests = collection.requests.filter((request) => request.id !== requestId);
+    const folders = removeRequestFromFolderList(collection.folders, requestId);
+    return requests.length !== collection.requests.length || folders !== collection.folders
+      ? { ...collection, requests, folders }
+      : collection;
+  });
+}
+
+function removeRequestFromFolderList(folders: ApiFolder[], requestId: string): ApiFolder[] {
+  return folders.map((folder) => {
+    const requests = folder.requests.filter((request) => request.id !== requestId);
+    const children = removeRequestFromFolderList(folder.children, requestId);
+    return requests.length !== folder.requests.length || children !== folder.children
+      ? { ...folder, requests, children }
+      : folder;
+  });
+}
+
+function insertRequestIntoFolders(folders: ApiFolder[], folderId: string, saved: ApiRequest, onInsert: () => void): ApiFolder[] {
+  return folders.map((folder) => {
+    if (folder.id === folderId) {
+      onInsert();
+      return { ...folder, requests: [...folder.requests, saved] };
+    }
+
+    const children = insertRequestIntoFolders(folder.children, folderId, saved, onInsert);
+    return children !== folder.children ? { ...folder, children } : folder;
+  });
 }
 
 function isFolderDescendant(
@@ -6343,14 +6526,14 @@ function statusColor(status: number): string {
 
 function categorizeError(message: string): string {
   const lower = message.toLowerCase();
-  if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("econnreset")) {
+  if (lower.includes("enotfound") || lower.includes("dns")) {
+    return "DNS lookup failed — Could not resolve the hostname.";
+  }
+  if (lower.includes("econnrefused") || lower.includes("econnreset")) {
     return "Connection refused — Is the server running?";
   }
   if (lower.includes("etimedout") || lower.includes("timeout") || lower.includes("timed out")) {
     return "Request timed out — The server did not respond in time.";
-  }
-  if (lower.includes("dns") || lower.includes("enotfound")) {
-    return "DNS lookup failed — Could not resolve the hostname.";
   }
   if (lower.includes("abort") || lower.includes("cancel")) {
     return "Request was cancelled.";

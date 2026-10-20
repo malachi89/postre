@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { getQuickJS } from "quickjs-emscripten";
 import { prisma } from "@/lib/db";
 import { inferIsSecret } from "@/lib/secret-utils";
@@ -10,6 +10,7 @@ import type {
   RequestDraft,
   ScriptExecutionResult,
   ScriptPhase,
+  ScriptTestResult,
   SendResult,
   VariableScope
 } from "@/lib/types";
@@ -49,7 +50,8 @@ function getBuiltinModuleSource(moduleName: string): string | null {
     moment: "moment/moment.js",
     underscore: "underscore/underscore.js",
     tv4: "tv4/tv4.js",
-    chai: "chai/index.js",
+    // chai 4 UMD bundle; v6+ needs browser built-ins (EventTarget) that QuickJS lacks
+    chai: "chai/chai.js",
   };
 
   const bundleRelative = bundlePaths[moduleName];
@@ -57,15 +59,27 @@ function getBuiltinModuleSource(moduleName: string): string | null {
     return null;
   }
 
-  try {
-    const fullPath = join(process.cwd(), "node_modules", bundleRelative);
-    const source = readFileSync(fullPath, "utf-8");
-    BUILTIN_MODULE_SOURCES.set(moduleName, source);
-    return source;
-  } catch (e) {
-    console.error("[request-scripts] Failed to load builtin module", moduleName, e);
-    return null;
+  // Walk up from cwd so the bundles resolve even when node_modules lives in a
+  // parent directory (monorepo) or the process runs from another folder.
+  let dir = process.cwd();
+  for (let depth = 0; depth < 8; depth += 1) {
+    const candidate = join(dir, "node_modules", bundleRelative);
+    try {
+      const source = readFileSync(candidate, "utf-8");
+      BUILTIN_MODULE_SOURCES.set(moduleName, source);
+      return source;
+    } catch {
+      // try the next candidate
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
   }
+
+  console.error("[request-scripts] Failed to load builtin module", moduleName);
+  return null;
 }
 
 function buildModuleLoaderSource(modules: string[]): string {
@@ -96,6 +110,8 @@ const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
 const SCRIPT_MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
 const SCRIPT_STACK_SIZE_BYTES = 512 * 1024;
 const SEND_REQUEST_TIMEOUT_SECS = 30;
+const SCRIPT_LOG_LIMIT = 1000;
+const SCRIPT_TEST_LIMIT = 500;
 
 type ScriptMutationAction = "set" | "unset";
 
@@ -138,6 +154,7 @@ interface ScriptState {
 
 interface ScriptPayload {
   mutations?: Array<Partial<ScriptMutation>>;
+  tests?: Array<Partial<ScriptTestResult>>;
 }
 
 export async function runRequestScript(input: RequestScriptInput): Promise<RequestScriptRun> {
@@ -181,7 +198,17 @@ export async function runRequestScript(input: RequestScriptInput): Promise<Reque
   const vm = runtime.newContext();
 
   const logHandle = vm.newFunction("log", (...args) => {
-    result.logs.push(args.map((arg) => formatLogValue(vm.dump(arg))).join(" "));
+    // Handles passed into host callbacks must be disposed by the host (after dump).
+    const lines = args.map((arg) => {
+      try {
+        return formatLogValue(vm.dump(arg));
+      } finally {
+        arg.dispose();
+      }
+    });
+    if (result.logs.length < SCRIPT_LOG_LIMIT) {
+      result.logs.push(lines.join(" "));
+    }
   });
   const consoleHandle = vm.newObject();
   vm.setProp(consoleHandle, "log", logHandle);
@@ -193,9 +220,15 @@ export async function runRequestScript(input: RequestScriptInput): Promise<Reque
   logHandle.dispose();
 
   const sendRequestHandle = vm.newFunction("__sendRequest", (configHandle) => {
-    const configJson = vm.getString(configHandle);
-    const config = JSON.parse(configJson) as SyncRequestConfig;
-    const responseJson = executeSyncRequest(config);
+    let responseJson = JSON.stringify({ error: "pm.sendRequest failed" });
+    try {
+      const configJson = vm.getString(configHandle);
+      const config = JSON.parse(configJson) as SyncRequestConfig;
+      responseJson = executeSyncRequest(config);
+    } catch {
+      // fall back to the generic error payload so a skipped JSON parse
+      // inside the native callback can't crash the runtime turn
+    }
     return vm.newString(responseJson);
   });
   vm.setProp(vm.global, "__sendRequest", sendRequestHandle);
@@ -219,6 +252,10 @@ export async function runRequestScript(input: RequestScriptInput): Promise<Reque
     const payloadText = vm.dump(evaluation.value);
     evaluation.value.dispose();
     const payload = parseScriptPayload(payloadText);
+    const tests = normalizeTests(payload.tests ?? []);
+    if (tests.length > 0) {
+      result.tests = tests;
+    }
     return {
       result,
       mutations: normalizeMutations(payload.mutations ?? [])
@@ -234,31 +271,39 @@ export async function applyScriptMutations(
   draft: RequestDraft,
   activeEnvironmentId: string | null
 ) {
-  for (const mutation of mutations) {
-    const where = mutationWhere(mutation, draft, activeEnvironmentId);
-
-    if (mutation.action === "unset") {
-      await prisma.variable.deleteMany({ where });
-      continue;
-    }
-
-    await prisma.$transaction([
-      prisma.variable.deleteMany({ where }),
-      prisma.variable.create({
-        data: {
-          key: mutation.key,
-          initialValue: mutation.value ?? "",
-          currentValue: mutation.value ?? "",
-          enabled: true,
-          scope: mutation.scope,
-          isSecret: inferIsSecret(mutation.key),
-          environmentId: mutation.scope === "ENVIRONMENT" ? activeEnvironmentId : null,
-          collectionId: mutation.scope === "COLLECTION" ? draft.collectionId ?? null : null,
-          requestId: mutation.scope === "REQUEST" ? draft.id ?? null : null
-        }
-      })
-    ]);
+  if (mutations.length === 0) {
+    return;
   }
+
+  // Validate every mutation's scope up front so we never tear writes:
+  // either ALL accepted mutations apply in one transaction, or none do.
+  const planned = mutations.map((mutation) => ({
+    mutation,
+    where: mutationWhere(mutation, draft, activeEnvironmentId)
+  }));
+
+  await prisma.$transaction([
+    ...planned.flatMap(({ mutation, where }) =>
+      mutation.action === "unset"
+        ? [prisma.variable.deleteMany({ where })]
+        : [
+            prisma.variable.deleteMany({ where }),
+            prisma.variable.create({
+              data: {
+                key: mutation.key,
+                initialValue: mutation.value ?? "",
+                currentValue: mutation.value ?? "",
+                enabled: true,
+                scope: mutation.scope,
+                isSecret: inferIsSecret(mutation.key),
+                environmentId: mutation.scope === "ENVIRONMENT" ? activeEnvironmentId : null,
+                collectionId: mutation.scope === "COLLECTION" ? draft.collectionId ?? null : null,
+                requestId: mutation.scope === "REQUEST" ? draft.id ?? null : null
+              }
+            })
+          ]
+    )
+  ]);
 }
 
 function mutationWhere(
@@ -310,6 +355,7 @@ function buildScriptSource(state: ScriptState, script: string, modules: string[]
 
   var __state = ${JSON.stringify(state)};
   var __mutations = [];
+  var __tests = [];
 
   function __string(value) {
     return value === undefined || value === null ? "" : String(value);
@@ -400,6 +446,34 @@ function buildScriptSource(state: ScriptState, script: string, modules: string[]
   }
 
   var __response = __state.response;
+  // Postman-style assertion chain: pm.response.to.have.status(200).
+  // Assertions throw so pm.test records them as failures.
+  function __responseAssertions() {
+    return {
+      have: {
+        status: function (expected) {
+          var code = __response ? __response.status : 0;
+          if (code !== expected) {
+            throw new Error("expected response status " + __string(code) + " to be " + __string(expected));
+          }
+        },
+        header: function (key, value) {
+          var headers = __response ? __response.headers : [];
+          var needle = __string(key).toLowerCase();
+          var found = null;
+          for (var i = 0; i < headers.length; i++) {
+            if (__string(headers[i].key).toLowerCase() === needle) {
+              found = __string(headers[i].value);
+              break;
+            }
+          }
+          if (found === null || (value !== undefined && value !== null && found !== __string(value))) {
+            throw new Error("expected response header '" + __string(key) + "' to be " + __string(value));
+          }
+        }
+      }
+    };
+  }
   var pm = {
     request: {
       name: __state.draft.name,
@@ -410,7 +484,7 @@ function buildScriptSource(state: ScriptState, script: string, modules: string[]
     },
     response: __response ? {
       code: __response.status,
-      status: __response.status,
+      status: __response.statusText,
       statusText: __response.statusText,
       responseTime: __response.durationMs,
       headers: __rowsToHeaders(__response.headers),
@@ -419,11 +493,27 @@ function buildScriptSource(state: ScriptState, script: string, modules: string[]
       },
       json: function () {
         return JSON.parse(__response.body || "");
-      }
+      },
+      to: __responseAssertions()
     } : undefined,
     globals: __scopeApi("global", "GLOBAL", false),
     environment: __scopeApi("environment", "ENVIRONMENT", true),
     collectionVariables: __scopeApi("collection", "COLLECTION", false),
+    // pm.test records pass/fail without aborting the script (Postman semantics).
+    test: function (name, fn) {
+      var entry = { name: __string(name), passed: false, error: null };
+      try {
+        fn();
+        entry.passed = true;
+      } catch (e) {
+        entry.error = e && typeof e.message === "string" ? e.message : String(e);
+      }
+      __tests.push(entry);
+      return null;
+    },
+    expect: function (value) {
+      return require("chai").expect(value);
+    },
     variables: {
       get: function (key) {
         key = __string(key);
@@ -465,7 +555,8 @@ function buildScriptSource(state: ScriptState, script: string, modules: string[]
       var parsed = JSON.parse(rawJson);
       var response = {
         code: parsed.code || 0,
-        status: parsed.status || 0,
+        status: parsed.statusText || "",
+        statusText: parsed.statusText || "",
         body: parsed.body || "",
         error: parsed.error || null,
         headers: {
@@ -484,7 +575,8 @@ function buildScriptSource(state: ScriptState, script: string, modules: string[]
           }
         },
         text: function () { return parsed.body || ""; },
-        json: function () { return JSON.parse(parsed.body || "{}"); }
+        json: function () { return JSON.parse(parsed.body || "{}"); },
+        to: __responseAssertions()
       };
       if (typeof callback === "function") {
         callback(parsed.error ? parsed.error : null, response);
@@ -495,7 +587,7 @@ function buildScriptSource(state: ScriptState, script: string, modules: string[]
 
   ${script}
 
-  return JSON.stringify({ mutations: __mutations });
+  return JSON.stringify({ mutations: __mutations, tests: __tests });
 })()
 `;
 }
@@ -532,6 +624,17 @@ function normalizeMutations(mutations: Array<Partial<ScriptMutation>>): ScriptMu
     .filter(Boolean) as ScriptMutation[];
 }
 
+function normalizeTests(tests: Array<Partial<ScriptTestResult>>): ScriptTestResult[] {
+  return tests
+    .filter((test): test is ScriptTestResult => typeof test.name === "string" && test.name.trim().length > 0)
+    .slice(0, SCRIPT_TEST_LIMIT)
+    .map((test) => ({
+      name: test.name,
+      passed: test.passed === true,
+      error: typeof test.error === "string" ? test.error : null
+    }));
+}
+
 function normalizeMutationScope(scope: unknown): VariableScope | null {
   if (scope === "GLOBAL" || scope === "ENVIRONMENT" || scope === "COLLECTION" || scope === "REQUEST") {
     return scope;
@@ -557,7 +660,7 @@ function executeSyncRequest(config: SyncRequestConfig): string {
   }
 
   const timeoutSecs = config.timeout
-    ? Math.ceil(config.timeout / 1000)
+    ? Math.min(Math.max(Math.ceil(config.timeout / 1000), 1), SEND_REQUEST_TIMEOUT_SECS)
     : SEND_REQUEST_TIMEOUT_SECS;
 
   const headerDir = mkdtempSync(join(tmpdir(), "postre-sr-"));
@@ -566,6 +669,8 @@ function executeSyncRequest(config: SyncRequestConfig): string {
   const args = [
     "-s", "-S",
     "-L",
+    "--proto", "=http,https",
+    "--proto-redir", "=http,https",
     "-X", method,
     "--max-time", String(timeoutSecs),
     "-D", headerFile,
@@ -588,7 +693,8 @@ function executeSyncRequest(config: SyncRequestConfig): string {
     args.push("-d", config.body.raw);
   }
 
-  args.push(url);
+  // `--` stops curl option parsing so a URL like "-o/tmp/x" can't inject options.
+  args.push("--", url);
 
   try {
     const stdout = execFileSync("curl", args, {
@@ -603,14 +709,17 @@ function executeSyncRequest(config: SyncRequestConfig): string {
     const body = stdout.replace(/\n?__POSTRE_STATUS__\d+$/, "");
 
     let headers: Array<{ key: string; value: string }> = [];
+    let statusText = "";
     try {
       const headerText = readFileSync(headerFile, "utf-8");
       headers = parseResponseHeaders(headerText);
+      statusText = readStatusLineFromHeaders(headerText);
     } catch { /* ignore missing header file */ }
 
     return JSON.stringify({
       code: statusCode,
-      status: statusCode,
+      status: statusText,
+      statusText,
       body,
       headers
     });
@@ -620,6 +729,17 @@ function executeSyncRequest(config: SyncRequestConfig): string {
   } finally {
     try { rmSync(headerDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
+}
+
+function readStatusLineFromHeaders(headerText: string): string {
+  let statusText = "";
+  for (const line of headerText.split(/\r?\n/)) {
+    if (/^HTTP\/[\d.]+ \d+/.test(line)) {
+      statusText = line.trim();
+    }
+  }
+  // "HTTP/1.1 201 Created" -> "Created"
+  return statusText.replace(/^HTTP\/[\d.]+\s+\d+\s*/, "").trim();
 }
 
 function parseResponseHeaders(headerText: string): Array<{ key: string; value: string }> {

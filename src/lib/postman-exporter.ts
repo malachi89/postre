@@ -48,7 +48,9 @@ function requestToPostmanItem(request: ApiRequest): unknown {
     name: request.name,
     request: {
       method: request.method,
-      header: request.headers.filter((h) => h.enabled).map(headerToPostman),
+      header: request.headers
+        .filter((h) => h.key.trim() || h.value || !h.enabled)
+        .map(headerToPostman),
       url: urlToPostman(request.url, request.queryParams),
       body: bodyToPostman(request.bodyMode, request.bodyRaw, request.bodyRawFormat),
       auth: authToPostman(request.auth),
@@ -86,11 +88,20 @@ function headerToPostman(header: { key: string; value: string; enabled?: boolean
   return {
     key: header.key,
     value: header.value,
-    type: "text"
+    type: "text",
+    disabled: header.enabled === false
   };
 }
 
 function urlToPostman(url: string, queryParams: { key: string; value: string; enabled: boolean }[]): unknown {
+  const rows = queryParams
+    .filter((q) => q.key.trim() || q.value || !q.enabled)
+    .map((q) => ({
+      key: q.key,
+      value: q.value,
+      disabled: !q.enabled
+    }));
+
   try {
     const parsed = new URL(url);
     return {
@@ -99,14 +110,15 @@ function urlToPostman(url: string, queryParams: { key: string; value: string; en
       host: parsed.hostname.split("."),
       port: parsed.port || undefined,
       path: parsed.pathname.split("/").filter(Boolean),
-      query: queryParams.filter((q) => q.enabled).map((q) => ({
-        key: q.key,
-        value: q.value,
-        disabled: !q.enabled
-      }))
+      query: rows
     };
   } catch {
-    return { raw: url };
+    // URLs with variables ({{baseUrl}}/x) don't parse; still emit query params
+    // so Postman doesn't lose the parameter table.
+    return {
+      raw: url,
+      query: rows
+    };
   }
 }
 
@@ -153,12 +165,14 @@ function parseBodyEntries(raw: string): { key: string; value: string; type: stri
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      return parsed.map((entry) => ({
-        key: entry.key ?? "",
-        value: entry.value ?? "",
-        type: entry.type ?? "text",
-        enabled: entry.enabled !== false
-      }));
+      return parsed
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+        .map((entry) => ({
+          key: typeof entry.key === "string" ? entry.key : "",
+          value: typeof entry.value === "string" ? entry.value : "",
+          type: typeof entry.type === "string" ? entry.type : "text",
+          enabled: entry.enabled !== false
+        }));
     }
   } catch {
     // ignore parse errors

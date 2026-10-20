@@ -8,15 +8,18 @@ export async function PATCH(request: NextRequest) {
 
   await prisma.$transaction([
     prisma.environment.updateMany({ data: { active: false } }),
+    // updateMany doesn't throw when the id no longer exists, unlike update (P2025).
     ...(body.environmentId
-      ? [
-          prisma.environment.update({
+      ? [prisma.environment.updateMany({
             where: { id: body.environmentId },
             data: { active: true }
-          })
-        ]
+          })]
       : [])
   ]);
 
-  return NextResponse.json({ activeEnvironmentId: body.environmentId ?? null });
+  const active = body.environmentId
+    ? ((await prisma.environment.findFirst({ where: { active: true } }))?.id ?? null)
+    : null;
+
+  return NextResponse.json({ activeEnvironmentId: active });
 }

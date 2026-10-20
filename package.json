@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@prisma/client": "6.19.2",
-    "chai": "^6.2.2",
+    "chai": "^4.5.0",
     "crypto-js": "^4.2.0",
     "lucide-react": "^0.555.0",
     "moment": "^2.30.1",
