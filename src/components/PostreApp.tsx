@@ -2842,13 +2842,13 @@ function RequestTabStrip({
               aria-current={active ? "page" : undefined}
               className={`group relative flex h-8 w-56 shrink-0 items-center rounded-t border px-2 text-sm transition ${
                 active
-                  ? "z-10 border-slate-300 bg-white text-slate-900 shadow-sm"
-                  : "border-transparent bg-slate-200/60 text-slate-500 hover:bg-white/80 hover:text-slate-700"
+                  ? "z-10 border-[var(--border)] bg-[var(--tab-active)] text-[var(--foreground)] shadow-sm"
+                  : "border-transparent bg-[var(--tab-inactive)] text-[var(--muted)] hover:border-[var(--border)] hover:bg-[var(--tab-inactive-hover)] hover:text-[var(--muted-strong)]"
               }`}
               onContextMenu={(event) => onContextMenu(event, tab.tabId)}
             >
               {active ? (
-                <span className="pointer-events-none absolute inset-x-0 top-0 h-[3px] rounded-t bg-teal-600" />
+                <span className="pointer-events-none absolute inset-x-0 top-0 h-[3px] rounded-t bg-[var(--accent)]" />
               ) : null}
               <button
                 type="button"
@@ -2856,10 +2856,14 @@ function RequestTabStrip({
                 onClick={() => onSelectTab(tab.tabId)}
                 title={`${tab.draft.method} ${tab.draft.name}`}
               >
-                <span className={`shrink-0 text-xs font-semibold ${active ? "text-teal-700" : methodColor(tab.draft.method)}`}>
+                <span
+                  className={`shrink-0 text-xs font-semibold ${
+                    active ? "text-teal-700" : `request-tab-method ${methodColor(tab.draft.method)}`
+                  }`}
+                >
                   {tab.draft.method}
                 </span>
-                <span className={`truncate ${active ? "font-semibold text-slate-900" : "font-medium"}`}>
+                <span className={`truncate ${active ? "font-semibold text-[var(--foreground)]" : "font-medium"}`}>
                   {tab.draft.name || "Untitled request"}
                 </span>
                 {tab.dirty || tab.saving ? (
@@ -2871,7 +2875,7 @@ function RequestTabStrip({
               </button>
               <button
                 type="button"
-                className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 opacity-80 hover:bg-slate-200 hover:text-slate-700 group-hover:opacity-100"
+                className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--muted)] opacity-80 transition hover:bg-[var(--surface-3)] hover:text-[var(--muted-strong)] group-hover:opacity-100"
                 onClick={(event) => {
                   event.stopPropagation();
                   onCloseTab(tab.tabId);

@@ -24,6 +24,9 @@
   --code-fg: #f8fafc;
   --overlay: rgba(15, 23, 42, 0.45);
   --shadow-panel: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --tab-active: #ffffff;
+  --tab-inactive: #e2e8f0;
+  --tab-inactive-hover: #f8fafc;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -49,6 +52,9 @@
     --code-fg: #f8fafc;
     --overlay: rgba(2, 6, 23, 0.66);
     --shadow-panel: 0 10px 30px rgba(2, 6, 23, 0.32);
+    --tab-active: #1e2d45;
+    --tab-inactive: #0d1727;
+    --tab-inactive-hover: #22324a;
   }
 }
 
@@ -74,6 +80,9 @@ html[data-theme="dark"] {
   --code-fg: #f8fafc;
   --overlay: rgba(2, 6, 23, 0.66);
   --shadow-panel: 0 10px 30px rgba(2, 6, 23, 0.32);
+  --tab-active: #1e2d45;
+  --tab-inactive: #0d1727;
+  --tab-inactive-hover: #22324a;
 }
 
 * {
@@ -204,4 +213,8 @@ html[data-theme="dark"] .active\:bg-teal-100:active {
 
 html[data-theme="dark"] .shadow-panel {
   box-shadow: var(--shadow-panel);
+}
+
+html[data-theme="dark"] .request-tab-method {
+  filter: brightness(1.45) saturate(1.05);
 }
