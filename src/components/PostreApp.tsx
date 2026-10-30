@@ -2838,13 +2838,18 @@ function RequestTabStrip({
             <div
               key={tab.tabId}
               data-request-tab-id={tab.tabId}
-              className={`group flex h-8 w-56 shrink-0 items-center rounded-t border px-2 text-sm transition ${
+              data-active={active ? "true" : "false"}
+              aria-current={active ? "page" : undefined}
+              className={`group relative flex h-8 w-56 shrink-0 items-center rounded-t border px-2 text-sm transition ${
                 active
-                  ? "border-slate-200 border-b-white bg-white text-slate-900 shadow-sm"
-                  : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-white"
+                  ? "z-10 border-slate-300 bg-white text-slate-900 shadow-sm"
+                  : "border-transparent bg-slate-200/60 text-slate-500 hover:bg-white/80 hover:text-slate-700"
               }`}
               onContextMenu={(event) => onContextMenu(event, tab.tabId)}
             >
+              {active ? (
+                <span className="pointer-events-none absolute inset-x-0 top-0 h-[3px] rounded-t bg-teal-600" />
+              ) : null}
               <button
                 type="button"
                 className="flex min-w-0 flex-1 items-center gap-2 text-left"
@@ -2854,7 +2859,9 @@ function RequestTabStrip({
                 <span className={`shrink-0 text-xs font-semibold ${active ? "text-teal-700" : methodColor(tab.draft.method)}`}>
                   {tab.draft.method}
                 </span>
-                <span className="truncate font-medium">{tab.draft.name || "Untitled request"}</span>
+                <span className={`truncate ${active ? "font-semibold text-slate-900" : "font-medium"}`}>
+                  {tab.draft.name || "Untitled request"}
+                </span>
                 {tab.dirty || tab.saving ? (
                   <span
                     className={`h-2 w-2 shrink-0 rounded-full ${tab.saving ? "bg-amber-400" : "bg-teal-500"}`}
