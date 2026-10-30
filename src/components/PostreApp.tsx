@@ -573,23 +573,27 @@ function TokenizedField({
   onChange,
   placeholder,
   ariaLabel,
+  "aria-label": ariaLabelAttr,
   variableLookup,
   disabled = false,
   multiline = false,
   className = "",
   syntaxHighlight,
-  fillHeight = false
+  fillHeight = false,
+  maskValue = false
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   ariaLabel?: string;
+  "aria-label"?: string;
   variableLookup: VariableLookup;
   disabled?: boolean;
   multiline?: boolean;
   className?: string;
   syntaxHighlight?: "json" | "xml";
   fillHeight?: boolean;
+  maskValue?: boolean;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const selectionRef = useRef<SelectionOffsets | null>(null);
@@ -605,8 +609,13 @@ function TokenizedField({
     [value, syntaxHighlight]
   );
   const tokenizedHtml = useMemo(
-    () => syntaxHighlight ? renderSyntaxHighlightedHtml(value, variableLookup, syntaxHighlight) : renderTokenizedHtml(value, variableLookup),
-    [value, variableLookup, syntaxHighlight]
+    () => {
+      if (maskValue && value) {
+        return escapeHtml(maskSecret(value));
+      }
+      return syntaxHighlight ? renderSyntaxHighlightedHtml(value, variableLookup, syntaxHighlight) : renderTokenizedHtml(value, variableLookup);
+    },
+    [value, variableLookup, syntaxHighlight, maskValue]
   );
   const suggestions = useMemo(
     () => (autocomplete ? getVariableSuggestions(variableLookup, autocomplete.match.query) : []),
@@ -711,7 +720,14 @@ function TokenizedField({
   }
 
   return (
-    <div className={fillHeight ? "relative flex min-h-0 flex-col" : "relative"}>
+    <div
+      className={[
+        fillHeight ? "relative flex min-h-0 flex-col w-full" : "relative w-full min-w-0",
+        autocomplete ? "z-30" : ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       {!value ? (
         <span
           className={`pointer-events-none absolute left-0 top-0 select-none text-sm text-slate-400 ${
@@ -741,7 +757,7 @@ function TokenizedField({
         contentEditable={!disabled}
         suppressContentEditableWarning
         role="textbox"
-        aria-label={ariaLabel}
+        aria-label={ariaLabel ?? ariaLabelAttr}
         aria-multiline={multiline}
         onPaste={(event) => {
           event.preventDefault();
@@ -815,11 +831,21 @@ function TokenizedField({
         }}
         onFocus={() => {
           const element = ref.current;
-          const nextSelection = element ? getSelectionOffsets(element) : null;
-
-          selectionRef.current = nextSelection;
           setIsFocused(true);
           if (element) {
+            if (maskValue && readEditableText(element, multiline) !== value) {
+              element.textContent = value;
+              const range = document.createRange();
+              range.selectNodeContents(element);
+              range.collapse(false);
+              const sel = window.getSelection();
+              if (sel) {
+                sel.removeAllRanges();
+                sel.addRange(range);
+              }
+            }
+            const nextSelection = getSelectionOffsets(element);
+            selectionRef.current = nextSelection;
             updateAutocomplete(readEditableText(element, multiline), nextSelection);
           }
         }}
@@ -832,7 +858,7 @@ function TokenizedField({
         }}
       />
       {autocomplete ? (
-        <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-1 w-full min-w-[280px] max-w-lg overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
           <div className="border-b border-slate-100 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Variables disponibles
           </div>
@@ -844,7 +870,7 @@ function TokenizedField({
                 return (
                   <button
                     key={suggestion.key}
-                    className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm ${
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-sm ${
                       active ? "bg-teal-50 text-teal-900" : "text-slate-700 hover:bg-slate-50"
                     }`}
                     onMouseDown={(event) => {
@@ -3679,7 +3705,7 @@ function KeyValueTable({
               ...row,
               ...patch,
               isSecret:
-                patch.key !== undefined ? row.isSecret || inferIsSecret(patch.key) : row.isSecret
+                patch.key !== undefined ? inferIsSecret(patch.key) : row.isSecret
             }
           : row
       )
@@ -4717,7 +4743,7 @@ function VariableTable({
                 patch.isSecret !== undefined
                   ? patch.isSecret
                   : patch.key !== undefined
-                    ? row.isSecret || inferIsSecret(patch.key)
+                    ? inferIsSecret(patch.key)
                     : row.isSecret
             }
           : row
@@ -5762,24 +5788,33 @@ function SecretInput({
   variableLookup?: VariableLookup;
   onChange: (value: string) => void;
 }) {
-  if (isSecret && !showSecrets) {
-    return (
-      <input
-        className="h-8 rounded border border-slate-300 px-2 font-mono text-sm"
-        value={maskSecret(value)}
-        readOnly
-      />
-    );
-  }
+  const [localShow, setLocalShow] = useState(false);
+
+  const effectiveShow = showSecrets || localShow;
+  const shouldMask = isSecret && !effectiveShow;
 
   return (
-    <TokenizedField
-      className="px-2"
-      value={value}
-      onChange={onChange}
-      aria-label="Row value"
-      variableLookup={variableLookup}
-    />
+    <div className="relative w-full min-w-0">
+      <TokenizedField
+        className={`pl-2 ${isSecret ? "pr-8" : "pr-2"}`}
+        value={value}
+        onChange={onChange}
+        ariaLabel="Row value"
+        variableLookup={variableLookup}
+        maskValue={shouldMask}
+      />
+      {isSecret ? (
+        <button
+          type="button"
+          className="absolute right-1.5 top-2 z-10 flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none"
+          onClick={() => setLocalShow((prev) => !prev)}
+          title={effectiveShow ? "Hide secret" : "Show secret"}
+          tabIndex={-1}
+        >
+          {effectiveShow ? <EyeOff size={14} /> : <Eye size={14} />}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
